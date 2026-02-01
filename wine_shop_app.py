@@ -332,34 +332,87 @@ def admin_view():
 
     elif menu == "Brand Manager":
         st.header("🏷️ Manage Brands")
-        new_brand = st.text_input("New Brand Name")
-        if st.button("Add Brand"):
-            try:
-                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (new_brand, True))
-                bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
-                for v in VARIANTS:
-                    conn.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 0.0))
-                conn.commit()
-                st.success(f"Added {new_brand}")
-            except Exception as e:
-                st.error(f"Error: {e}")
-                
+        
+        # --- 1. Add New Brand ---
+        with st.expander("➕ Add New Brand Manually"):
+            new_brand = st.text_input("New Brand Name")
+            if st.button("Add Brand"):
+                if new_brand:
+                    try:
+                        # Insert Brand
+                        conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (new_brand, True))
+                        # Get the ID of the new brand
+                        cur = conn.cursor()
+                        cur.execute("SELECT id FROM brands WHERE name=?", (new_brand,))
+                        bid = cur.fetchone()[0]
+                        # Create 0.0 price entries for all variants
+                        for v in VARIANTS:
+                            conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, ?)", (bid, v, 0.0))
+                        conn.commit()
+                        st.success(f"Added {new_brand} successfully!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Brand already exists.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
         st.divider()
+
+        # --- 2. Edit Prices (FIXED) ---
         st.subheader("Edit Prices")
         brands = get_brands()
-        b_sel = st.selectbox("Select Brand", brands['name'])
-        if b_sel:
-            bid = brands[brands['name'] == b_sel].iloc[0]['id']
-            prices = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
+        
+        if not brands.empty:
+            b_sel = st.selectbox("Select Brand to Edit", brands['name'])
             
-            with st.form("price_edit"):
-                for _, row in prices.iterrows():
-                    new_p = st.number_input(f"Price for {row['variant']}", value=row['price'])
-                    conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (new_p, bid, row['variant']))
+            if b_sel:
+                # Get Brand ID
+                bid = brands[brands['name'] == b_sel].iloc[0]['id']
                 
-                if st.form_submit_button("Update Prices"):
-                    conn.commit()
-                    st.success("Prices updated.")
+                # Fetch current prices
+                prices = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
+                
+                if prices.empty:
+                    st.warning("No price data found for this brand. (Try re-adding it).")
+                else:
+                    # START FORM
+                    with st.form("price_edit_form"):
+                        st.write(f"Editing prices for: **{b_sel}**")
+                        
+                        # Dictionary to capture inputs
+                        input_values = {}
+                        
+                        # Loop through variants (2L, 1L, Q, P, N)
+                        cols = st.columns(len(prices))
+                        for idx, row in prices.iterrows():
+                            # Create a unique key for each input to prevent conflicts
+                            var_name = row['variant']
+                            current_val = row['price']
+                            
+                            # Input Field
+                            new_val = st.number_input(
+                                f"{var_name} Price (₹)", 
+                                value=float(current_val),
+                                min_value=0.0,
+                                step=10.0,
+                                key=f"price_{bid}_{var_name}"
+                            )
+                            input_values[var_name] = new_val
+                        
+                        # SUBMIT BUTTON
+                        if st.form_submit_button("💾 Save Updated Prices"):
+                            # Only execute SQL here, after button press
+                            for var, price in input_values.items():
+                                conn.execute(
+                                    "UPDATE prices SET price=? WHERE brand_id=? AND variant=?", 
+                                    (price, bid, var)
+                                )
+                            conn.commit()
+                            st.success(f"Prices for {b_sel} updated!")
+                            # Optional: Wait a moment then rerun to refresh
+                            st.rerun()
+        else:
+            st.info("No brands found in database.")
 
     elif menu == "Import Excel":
         st.header("📥 Import Brands")
