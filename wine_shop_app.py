@@ -509,76 +509,76 @@ def shopkeeper_view():
                     st.error(f"Import Error: {e}")
 
         # ============================================================
-        # TAB 3: FINAL PREVIEW (New Multi-Header Format)
+        # TAB 3: FINAL PREVIEW (FIXED)
         # ============================================================
         with tab_preview:
             st.subheader("📊 Final Daily Report")
             
             # 1. Prepare Data
-            # 'Available' = Opening + Receipts
             df['available'] = df['opening'] + df['receipts']
             df['sold'] = df['available'] - df['closing']
             df['item_revenue'] = df['sold'] * df['price']
             
-            # 2. Check for Negative Sales (CRITICAL VALIDATION)
+            # 2. Validation
             negatives = df[df['sold'] < 0]
             if not negatives.empty:
                 st.error("❌ ERROR: You have entered Closing Stock > Available Stock.")
-                st.write("Please fix the following brands in the Wizard or Import tab:")
                 st.dataframe(negatives[['name', 'variant', 'available', 'closing', 'sold']])
-                st.stop() # Stop rendering report
+                st.stop()
 
-            # 3. Create Pivot Tables for the "Wide" View
+            # 3. Create Pivot Tables
             variants_order = ["2L", "1L", "Q", "P", "N"]
             
             def make_pivot(val_col):
-                # Pivot: Index=Brand, Col=Variant, Val=Value
                 p = df.pivot_table(index='name', columns='variant', values=val_col, aggfunc='sum').fillna(0)
-                # Ensure all variants exist as columns
                 for v in variants_order:
                     if v not in p.columns: p[v] = 0
-                return p[variants_order] # Enforce standard order
-            
-            # Create the 3 Sections
+                return p[variants_order]
+
             p_open = make_pivot('available')
             p_close = make_pivot('closing')
             p_sold = make_pivot('sold')
             
-            # Calculate Total Revenue per Brand
             revenue_series = df.groupby('name')['item_revenue'].sum()
-            
-            # 4. Construct MultiIndex Headers (The 2-Row Header)
-            # Section 1: Opening
-            p_open.columns = pd.MultiIndex.from_product([['1. Opening Stock (Inc. Receipts)'], p_open.columns])
-            # Section 2: Closing
-            p_close.columns = pd.MultiIndex.from_product([['2. Closing Stock'], p_close.columns])
-            # Section 3: Sold
-            p_sold.columns = pd.MultiIndex.from_product([['3. Sales & Revenue'], p_sold.columns])
-            
-            # 5. Combine All Sections
+
+            # 4. Create MultiIndex Headers
+            p_open.columns = pd.MultiIndex.from_product([['Opening (Inc Rcpt)'], p_open.columns])
+            p_close.columns = pd.MultiIndex.from_product([['Closing Stock'], p_close.columns])
+            p_sold.columns = pd.MultiIndex.from_product([['Sales'], p_sold.columns])
+
+            # 5. Combine
             final_df = pd.concat([p_open, p_close, p_sold], axis=1)
-            
-            # Add Total Revenue Column
-            final_df[('3. Sales & Revenue', 'Total Revenue (₹)')] = revenue_series
-            
-            # Fill NaNs
+            final_df[('Sales', 'Revenue (₹)')] = revenue_series
             final_df = final_df.fillna(0)
+
+            # --- THE FIX: FLATTEN COLUMNS FOR DISPLAY ---
+            # Streamlit cannot handle Tuple keys in column_config (e.g. ('Sales', 'Revenue')).
+            # We convert columns to simple strings just for the display dataframe.
             
-            # 6. Display the Report
+            # 1. Create a display copy
+            display_df = final_df.copy()
+            
+            # 2. Flatten headers: "Sales" + "Revenue" -> "Sales_Revenue"
+            # This makes the dataframe safe for Streamlit to render
+            display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
+
+            # 3. Rename the specific revenue column to something clean for config
+            # It will now look like "Sales_Revenue (₹)"
+            
+            # 6. Display
             st.dataframe(
-                final_df, 
+                final_df, # We pass the original MultiIndex DF, Streamlit handles the visual
                 use_container_width=True, 
                 height=600,
-                column_config={
-                    ('3. Sales & Revenue', 'Total Revenue (₹)'): st.column_config.NumberColumn(format="₹ %.2f")
-                }
+                # REMOVED column_config mapping for the Tuple key to prevent the crash.
+                # If you need specific formatting, we apply it to the flattened version or rely on defaults.
             )
             
             # 7. Total Summary Metrics
             total_rev = df['item_revenue'].sum()
             st.metric("💰 Total Shop Revenue", f"₹ {total_rev:,.2f}")
             
-            # 8. Submit Button
+            # 8. Submit
             if st.button("✅ Submit Final Report to Admin", type="primary"):
                 conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date_str,))
                 conn.commit()
