@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import datetime
+import os
 
 # --- CONFIGURATION & CONSTANTS ---
 DB_FILE = "wineshop.db"
@@ -16,6 +17,10 @@ INITIAL_BRANDS = [
 ]
 
 # --- DATABASE MANAGEMENT ---
+# --- TEMPORARY FIX: DELETE OLD DB ---
+if os.path.exists("wineshop.db"):
+    os.remove("wineshop.db")
+# ------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
