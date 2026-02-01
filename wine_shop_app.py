@@ -1028,8 +1028,8 @@ def admin_view():
     # --- 5. SETTINGS ---
     elif menu == "Settings":
         st.header("⚙️ Admin Settings")
-        st.markdown("**Purpose:** Manage access credentials for yourself and shopkeepers.")
         
+        # --- A. Change Password ---
         with st.expander("👤 Change Admin Password", expanded=False):
             with st.form("change_pass_form"):
                 current_user = st.session_state.get('user', 'admin')
@@ -1039,7 +1039,7 @@ def admin_view():
                     conn.commit()
                     st.success("Admin password updated.")
 
-        st.divider()
+        # --- B. Shopkeeper PIN ---
         st.subheader("🏪 Shopkeeper Access")
         with st.form("change_pin_form"):
             st.write("Update the PIN used by shopkeepers on the main login screen.")
@@ -1055,15 +1055,15 @@ def admin_view():
                         st.error(f"Error: {e}")
                 else:
                     st.error("PIN cannot be empty.")
+
         st.divider()
+
+        # --- C. Database Backup ---
         st.subheader("💾 System Backup")
         st.markdown("Download a copy of the entire database to keep your data safe.")
-        
-        # Read the DB file as binary
         try:
             with open("wineshop.db", "rb") as f:
                 db_bytes = f.read()
-                
             st.download_button(
                 label="📥 Download Database Backup (.db)",
                 data=db_bytes,
@@ -1072,6 +1072,36 @@ def admin_view():
             )
         except Exception as e:
             st.error(f"Could not read database file: {e}")
+
+        st.divider()
+
+        # --- D. DANGER ZONE (RESET INVENTORY) ---
+        st.subheader("⚠️ Danger Zone")
+        st.markdown("""
+        **Reset Inventory Data:**
+        * This will **DELETE ALL** daily stock records (Opening, Closing, Sold, Revenue).
+        * It **KEEPS** your Brand Names and Prices.
+        * Use this when you want to start fresh (e.g., New Financial Year).
+        """)
+        
+        with st.form("reset_inventory_form"):
+            # Safety Checkbox
+            confirm_reset = st.checkbox("I understand this action is permanent and cannot be undone.")
+            
+            # Delete Button
+            if st.form_submit_button("🔥 Clear All Inventory History"):
+                if confirm_reset:
+                    try:
+                        # The Command: Deletes all rows from 'inventory' table
+                        conn.execute("DELETE FROM inventory")
+                        conn.commit()
+                        
+                        st.error("✅ ALL Inventory Data has been wiped.")
+                        st.toast("System Reset Complete.")
+                    except Exception as e:
+                        st.error(f"Error resetting data: {e}")
+                else:
+                    st.warning("❌ You must check the confirmation box above to proceed.")
 # --- MAIN APP ROUTING ---
 if 'role' not in st.session_state:
     login_screen()
