@@ -821,7 +821,7 @@ def admin_view():
             else:
                 st.caption("No stock receipts recorded yet for this date.")
 
-    # --- 3. BRAND MANAGER (STRICT DUPLICATE CHECK) ---
+    # --- 3. BRAND MANAGER (CLEAN UI & STRICT DEFAULTS) ---
     elif menu == "Brand Manager":
         st.header("🏷️ Manage Brands & Prices")
         st.markdown("""
@@ -829,22 +829,17 @@ def admin_view():
         * **Duplicate Protection:** Ignores spaces and capitalization (e.g., "100pipers" matches "100 Pipers").
         """)
         
-        # --- A. ADD NEW BRAND (Enhanced Check) ---
+        # --- A. ADD NEW BRAND ---
         with st.expander("➕ Add New Brand Manually"):
             new_brand_raw = st.text_input("New Brand Name")
             
             if st.button("Add Brand"):
                 if new_brand_raw:
-                    # 1. Prepare "Pretty" Name for Storage
-                    # .split() + .join() ensures single spaces between words and trims ends
+                    # 1. Normalize Name
                     clean_name = " ".join(new_brand_raw.split()).title()
-                    
-                    # 2. Prepare "Strict" Key for Checking
-                    # Remove ALL spaces and make lowercase: "100 Pipers" -> "100pipers"
                     search_key = clean_name.lower().replace(" ", "")
                     
-                    # 3. Check DB ignoring spaces
-                    # SQL Logic: LOWER(REPLACE(name, ' ', '')) converts DB entry '100 Pipers' to '100pipers'
+                    # 2. Check Duplicates
                     existing = pd.read_sql(
                         "SELECT name FROM brands WHERE LOWER(REPLACE(name, ' ', '')) = ?", 
                         conn, 
@@ -856,11 +851,10 @@ def admin_view():
                         st.error(f"❌ Duplicate prevented! Matches existing brand: **'{real_name}'**")
                     else:
                         try:
-                            # 4. Insert Brand
                             conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
                             bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
                             
-                            # 5. Create Default Prices
+                            # 3. Create Default Prices (STRICTLY 0.0)
                             for v in VARIANTS:
                                 conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
                             conn.commit()
@@ -871,58 +865,76 @@ def admin_view():
 
         st.divider()
 
-        # --- B. EDIT PRICES (Same as before) ---
+        # --- B. EDIT PRICES (Clean Dropdown) ---
         st.subheader("Edit Prices")
         
-        # Get Brands with IDs
+        # 1. Get Brands
         brands_df = pd.read_sql("SELECT id, name FROM brands ORDER BY name", conn)
         
         if not brands_df.empty:
-            brands_df['label'] = brands_df['name'] + " (ID: " + brands_df['id'].astype(str) + ")"
-            sel_label = st.selectbox("Select Brand to Edit", brands_df['label'])
+            # 2. Create Dictionary for Lookup {Name: ID}
+            # This hides the ID from the user but keeps it for the system.
+            # If duplicates exist in DB, this picks the last one (cleaning up the list).
+            brand_map = {row['name']: row['id'] for _, row in brands_df.iterrows()}
             
-            if sel_label:
-                bid = int(brands_df[brands_df['label'] == sel_label].iloc[0]['id'])
-                b_name = brands_df[brands_df['label'] == sel_label].iloc[0]['name']
+            # 3. Show ONLY Names in Dropdown
+            sel_brand_name = st.selectbox("Select Brand to Edit", list(brand_map.keys()))
+            
+            if sel_brand_name:
+                # Retrieve ID hidden in the map
+                bid = brand_map[sel_brand_name]
                 
-                # Auto-Repair Missing Prices
+                # 4. Auto-Repair Missing Prices (Ensure they are 0.0)
                 existing_prices = pd.read_sql("SELECT variant FROM prices WHERE brand_id=?", conn, params=(bid,))
                 existing_vars = existing_prices['variant'].tolist()
                 missing_vars = [v for v in VARIANTS if v not in existing_vars]
                 
                 if missing_vars:
                     for v in missing_vars:
+                        # Force 0.0 default
                         conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
                     conn.commit()
                 
-                # Fetch Prices
+                # 5. Fetch Current Prices
                 prices_df = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
                 
                 with st.form("price_edit_form"):
-                    st.write(f"Editing prices for: **{b_name}**")
+                    st.write(f"Editing prices for: **{sel_brand_name}**")
                     cols = st.columns(len(VARIANTS))
                     input_values = {}
                     
                     for i, v_name in enumerate(VARIANTS):
                         row = prices_df[prices_df['variant'] == v_name]
+                        
+                        # 6. Strict Default Value Logic
                         current_val = 0.0
                         if not row.empty:
-                            current_val = float(row.iloc[0]['price'])
+                            db_val = row.iloc[0]['price']
+                            # Ensure it's a valid float; if None/Null, use 0.0
+                            if db_val is not None:
+                                current_val = float(db_val)
                         
                         with cols[i]:
-                            new_val = st.number_input(f"{v_name}", value=current_val, min_value=0.0, step=10.0, key=f"p_{bid}_{v_name}")
+                            new_val = st.number_input(
+                                f"{v_name}", 
+                                value=current_val, 
+                                min_value=0.0, 
+                                step=10.0, 
+                                # Key includes BID to prevent "ghost" values from previous brands
+                                key=f"p_{bid}_{v_name}" 
+                            )
                             input_values[v_name] = new_val
                     
-                    st.caption("Prices are in Rupees (₹).")
+                    st.caption("Prices are in Rupees (₹). Set to 0 if not sold.")
+                    
                     if st.form_submit_button("💾 Save Updated Prices"):
                         for var, price in input_values.items():
                             conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (price, bid, var))
                         conn.commit()
-                        st.success(f"✅ Prices updated for {b_name}!")
+                        st.success(f"✅ Prices updated for {sel_brand_name}!")
                         st.rerun()
         else:
             st.info("No brands found.")
-
     # --- 4. IMPORT EXCEL (MASTER PRICE LIST - STRICT DUPLICATE CHECK) ---
     elif menu == "Import Excel":
         st.header("📥 Import Master Price List")
