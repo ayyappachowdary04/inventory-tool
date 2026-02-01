@@ -1,3 +1,25 @@
+import subprocess
+import sys
+
+# --- 1. DEPENDENCY CHECK & AUTO-INSTALL ---
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+required_packages = {
+    'pandas': 'pandas',
+    'streamlit': 'streamlit',
+    'openpyxl': 'openpyxl',  # For .xlsx files
+    'xlrd': 'xlrd>=2.0.1'    # For .xls files
+}
+
+for lib, pip_name in required_packages.items():
+    try:
+        __import__(lib)
+    except ImportError:
+        print(f"Installing missing package: {pip_name}...")
+        install(pip_name)
+
+# --- STANDARD IMPORTS ---
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -361,31 +383,66 @@ def admin_view():
                     st.success("Prices updated.")
 
     elif menu == "Import Excel":
-        st.header("📥 Import Brands from Excel")
-        st.markdown("Upload `.xlsx` file. Ensure brand names are in **Column A**, starting **Row 3**.")
-        uploaded_file = st.file_uploader("Choose file", type="xlsx")
+        st.header("📥 Import Brands")
+        st.markdown("""
+        **Instructions:**
+        * Supports **.xlsx**, **.xls**, and **.csv**.
+        * Reads **Column A** (starting Row 3) for Brand Names.
+        * If file has multiple sheets, **all sheets** will be processed.
+        """)
+        
+        # 1. Accept multiple file types
+        uploaded_file = st.file_uploader("Choose file", type=["xlsx", "xls", "csv"])
         
         if uploaded_file:
             if st.button("Process Import"):
+                all_brands = set() # Use a set to automatically avoid duplicates in memory
+                
                 try:
-                    df = pd.read_excel(uploaded_file, header=None, skiprows=2)
-                    brands_imported = df[0].unique() # Column A is index 0
+                    # 2. Determine File Type & Read Data
+                    file_ext = uploaded_file.name.split('.')[-1].lower()
                     
+                    if file_ext == 'csv':
+                        # Read CSV (Single Sheet)
+                        df = pd.read_csv(uploaded_file, header=None, skiprows=2)
+                        brands_found = df[0].dropna().astype(str).tolist()
+                        all_brands.update(brands_found)
+                        
+                    elif file_ext in ['xlsx', 'xls']:
+                        # Read Excel (Multiple Sheets)
+                        # sheet_name=None reads ALL sheets into a dictionary
+                        xls_data = pd.read_excel(uploaded_file, sheet_name=None, header=None, skiprows=2)
+                        
+                        for sheet_name, df in xls_data.items():
+                            if not df.empty:
+                                # Assume Column A is index 0
+                                brands_found = df[0].dropna().astype(str).tolist()
+                                all_brands.update(brands_found)
+                                st.write(f"Found {len(brands_found)} brands in sheet: *{sheet_name}*")
+
+                    # 3. Save to Database
                     count = 0
-                    for b in brands_imported:
-                        if pd.notna(b):
+                    for b in all_brands:
+                        clean_name = b.strip()
+                        if len(clean_name) > 0:
                             try:
-                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (str(b).strip(), True))
+                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
                                 bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
                                 for v in VARIANTS:
                                     conn.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 0.0))
                                 count += 1
                             except sqlite3.IntegrityError:
-                                pass # Skip duplicates
+                                pass # Brand already exists, skip it
+
                     conn.commit()
-                    st.success(f"Successfully imported {count} new brands!")
+                    
+                    if count > 0:
+                        st.success(f"✅ Successfully imported {count} new brands!")
+                    else:
+                        st.warning("No new brands found (duplicates skipped).")
+                        
                 except Exception as e:
-                    st.error(f"Import failed: {e}")
+                    st.error(f"❌ Import failed: {e}")
 # --- MAIN APP ROUTING ---
 if 'role' not in st.session_state:
     login_screen()
