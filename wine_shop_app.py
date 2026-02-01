@@ -923,23 +923,17 @@ def admin_view():
         else:
             st.info("No brands found.")
 
-    # --- 4. IMPORT EXCEL (MASTER PRICE LIST) ---
+    # --- 4. IMPORT EXCEL (MASTER PRICE LIST - STRICT DUPLICATE CHECK) ---
     elif menu == "Import Excel":
         st.header("📥 Import Master Price List")
         st.markdown("""
         **Purpose:** Bulk upload Brands AND Prices together.
+        **Duplicate Protection:** Ignores spaces and capitalization (e.g., "100pipers" matches "100 Pipers").
         
         ### 📋 File Format Requirements
-        * **File Types:** `.xlsx`, `.xls`, `.csv` (Multi-sheet supported)
-        * **Rows:** Brand Names (Column A or 'Brand').
+        * **Rows:** Brand Names.
         * **Columns:** Headers must indicate sizes (e.g., `750ml`, `Q`, `1L`).
         * **Cells:** The Price (₹) for that brand/size.
-        
-        **Example Layout:**
-        | Brand Name | 750ml | 375ml | 180ml |
-        | :--- | :--- | :--- | :--- |
-        | Royal Stag | 540 | 270 | 140 |
-        | Old Monk | 400 | 200 | 100 |
         """)
         
         uploaded_file = st.file_uploader("Upload Price List", type=["xlsx", "xls", "csv"])
@@ -947,7 +941,7 @@ def admin_view():
         if uploaded_file:
             if st.button("🚀 Process Import"):
                 try:
-                    # 1. Parse File & Sheets
+                    # 1. Parse File
                     file_ext = uploaded_file.name.split('.')[-1].lower()
                     data_dict = {}
                     
@@ -956,30 +950,40 @@ def admin_view():
                     else:
                         data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                     
+                    # 2. Build Fast Lookup Map for Existing Brands
+                    # We load all brands into memory first to check against them efficiently.
+                    # Key: "royalstag" (lowercase, no spaces), Value: brand_id
+                    existing_brands = pd.read_sql("SELECT id, name FROM brands", conn)
+                    
+                    # Create the normalized map: "100 Pipers" -> key: "100pipers", value: 12
+                    brand_map = {
+                        str(row['name']).lower().replace(" ", ""): row['id'] 
+                        for _, row in existing_brands.iterrows()
+                    }
+                    
                     total_brands_touched = 0
                     total_prices_updated = 0
+                    new_brands_added = 0
                     
-                    # 2. Iterate through all sheets
+                    # 3. Iterate Sheets
                     for sheet_name, df_imp in data_dict.items():
                         if df_imp.empty: continue
                         
                         # Clean Headers
                         df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                         
-                        # 3. Map Columns to System Variants
+                        # Map Columns
                         variant_map = {
-                            "2l": "2L", "2000ml": "2L",
-                            "1l": "1L", "1000ml": "1L", "full": "1L",
+                            "2l": "2L", "2000ml": "2L", "1l": "1L", "1000ml": "1L", "full": "1L",
                             "q": "Q", "750ml": "Q", "qt": "Q", "quart": "Q",
                             "p": "P", "375ml": "P", "pint": "P", "half": "P",
                             "n": "N", "180ml": "N", "nip": "N", "quarter": "N"
                         }
                         
-                        # Find which columns in this sheet match our sizes
-                        found_maps = {} 
+                        found_maps = {}
                         for col in df_imp.columns:
                             for key, sys_var in variant_map.items():
-                                if key in col: # e.g. "mrp 750ml" matches "750ml"
+                                if key in col:
                                     found_maps[col] = sys_var
                                     break
                         
@@ -987,53 +991,53 @@ def admin_view():
                             st.warning(f"⚠️ Sheet '{sheet_name}': No size columns found. Skipping.")
                             continue
                             
-                        # 4. Identify Brand Column
-                        brand_col = df_imp.columns[0] # Default to first col
+                        # Find Brand Column
+                        brand_col = df_imp.columns[0]
                         for c in df_imp.columns:
                             if 'brand' in c or 'name' in c or 'item' in c:
                                 brand_col = c
                                 break
                         
-                        # 5. Process Rows
                         st.write(f"Processing sheet: *{sheet_name}*...")
                         
+                        # 4. Process Rows
                         for _, row in df_imp.iterrows():
                             raw_brand = str(row[brand_col]).strip()
                             if not raw_brand or raw_brand.lower() == 'nan': continue
                             
-                            # A. Ensure Brand Exists (Create if Missing)
-                            try:
-                                # Try inserting new brand
-                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (raw_brand, True))
+                            # NORMALIZE INPUT: " 100 Pipers " -> "100pipers"
+                            search_key = raw_brand.lower().replace(" ", "")
+                            
+                            # CHECK LOOKUP MAP
+                            bid = brand_map.get(search_key)
+                            
+                            if not bid:
+                                # Brand does not exist (even with loose matching) -> Create New
+                                clean_name = " ".join(raw_brand.split()).title() # Pretty format: "100 Pipers"
+                                
+                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
                                 bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
                                 
-                                # If new, create empty price rows for ALL variants first
-                                for v in VARIANTS:
-                                    conn.execute("INSERT OR IGNORE INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
+                                # Add to map immediately so duplicates later in THIS file are caught
+                                brand_map[search_key] = bid 
                                 
-                            except sqlite3.IntegrityError:
-                                # Brand exists, fetch its ID
-                                cur = conn.cursor()
-                                cur.execute("SELECT id FROM brands WHERE name=?", (raw_brand,))
-                                res = cur.fetchone()
-                                if res:
-                                    bid = res[0]
-                                else:
-                                    continue # Should not happen
+                                # Init Prices
+                                for v in VARIANTS:
+                                    conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
+                                
+                                new_brands_added += 1
 
                             total_brands_touched += 1
 
-                            # B. Update Prices based on mapped columns
+                            # Update Prices
                             for col_name, sys_var in found_maps.items():
                                 try:
-                                    # Get Price from cell
-                                    val = row[col_name]
-                                    price_val = float(val)
+                                    price_val = float(row[col_name])
                                 except:
                                     price_val = 0.0
                                 
+                                # Only update if price is valid (Price Safety)
                                 if price_val > 0:
-                                    # Update the specific variant price
                                     conn.execute("""
                                         UPDATE prices 
                                         SET price = ? 
@@ -1045,7 +1049,7 @@ def admin_view():
                     
                     if total_brands_touched > 0:
                         st.success(f"✅ Import Complete!")
-                        st.info(f"• Processed {total_brands_touched} brands.\n• Updated {total_prices_updated} price entries.")
+                        st.info(f"• Brands Processed: {total_brands_touched}\n• New Brands Created: {new_brands_added}\n• Prices Updated: {total_prices_updated}")
                         st.balloons()
                     else:
                         st.warning("No valid brand data found.")
