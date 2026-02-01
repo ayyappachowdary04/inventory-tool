@@ -775,6 +775,7 @@ def admin_view():
                                 
                     except Exception as e:
                         st.error(f"Import Error: {e}")
+            # === TAB 3: IMPORT PDF (FIXED) ===
             with tab_pdf:
                 st.subheader("📄 Import from Official Receipt PDF")
                 st.markdown("""
@@ -782,7 +783,6 @@ def admin_view():
                 1. Upload the 'Invoice Cum Delivery Challan' PDF.
                 2. System extracts the inventory table automatically.
                 3. **Cases are converted to bottles** (e.g., 1 Case 180ml = 48 bottles).
-                4. Brand names like 'Vat 69 Blended...' are matched to 'Vat 69'.
                 """)
                 
                 uploaded_pdf = st.file_uploader("Upload Receipt PDF", type=["pdf"], key="pdf_upload")
@@ -790,10 +790,8 @@ def admin_view():
                 if uploaded_pdf:
                     if st.button("🔍 Process PDF"):
                         try:
-                            # 1. Get DB Brands for matching
+                            # 1. Get DB Brands
                             db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
-                            # List of tuples: [('Royal Stag', 1), ('Vat 69', 2)...]
-                            # Sort by length desc to match longest names first
                             db_brands_list = sorted(
                                 list(zip(db_brands['name'], db_brands['id'])), 
                                 key=lambda x: len(x[0]), 
@@ -804,27 +802,45 @@ def admin_view():
                             df_extracted = parse_pdf_receipt(uploaded_pdf, db_brands_list)
                             
                             if df_extracted.empty:
-                                st.error("❌ No valid inventory data found. Check PDF format.")
+                                st.error("❌ No valid inventory data found. Check PDF format or Brand Names.")
                             else:
-                                st.success(f"✅ Extracted {len(df_extracted)} items!")
-                                
-                                # 3. Show Preview
-                                st.subheader("Preview Data to Import")
+                                st.success(f"✅ Extracted {len(df_extracted)} items from PDF!")
                                 st.dataframe(df_extracted[['brand_name', 'variant', 'qty', 'raw_pdf_brand']])
                                 
-                                # 4. Commit Button
-                                if st.button("🚀 Add to Inventory"):
-                                    count = 0
+                                # 3. Commit to Database
+                                if st.button("🚀 Add to Inventory", key="confirm_pdf"):
+                                    # A. FORCE INITIALIZE THE DAY (Critical Fix)
+                                    initialize_day(date_str)
+                                    
+                                    # B. UPDATE ROWS
+                                    update_count = 0
+                                    rows_failed = 0
+                                    
                                     for _, row in df_extracted.iterrows():
-                                        conn.execute("""
+                                        # Execute Update
+                                        cur = conn.execute("""
                                             UPDATE inventory 
                                             SET receipts = receipts + ? 
                                             WHERE date = ? AND brand_id = ? AND variant = ?
                                         """, (row['qty'], date_str, row['brand_id'], row['variant']))
-                                        count += 1
+                                        
+                                        if cur.rowcount > 0:
+                                            update_count += 1
+                                        else:
+                                            rows_failed += 1
+                                            
                                     conn.commit()
-                                    st.success(f"🎉 Successfully added {count} items to stock receipts!")
-                                    st.balloons()
+                                    
+                                    # C. REPORT RESULTS
+                                    if update_count > 0:
+                                        st.balloons()
+                                        st.success(f"🎉 Successfully updated stock for {update_count} brands!")
+                                        if rows_failed > 0:
+                                            st.warning(f"⚠️ {rows_failed} items matched in PDF but failed to update DB (Variant mismatch?).")
+                                    else:
+                                        st.error("❌ Database update failed! No rows were modified. Please check if the brands/variants exist in the system.")
+                                        
+                                    st.rerun()
                                     
                         except Exception as e:
                             st.error(f"PDF Processing Error: {e}")
