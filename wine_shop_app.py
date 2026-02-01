@@ -895,68 +895,135 @@ def admin_view():
         else:
             st.info("No brands found in database.")
 
-    # --- 4. IMPORT EXCEL ---
+    # --- 4. IMPORT EXCEL (MASTER PRICE LIST) ---
     elif menu == "Import Excel":
-        st.header("📥 Import Brands Master List")
+        st.header("📥 Import Master Price List")
         st.markdown("""
-        **Purpose:** Bulk create brand names from an Excel list.
+        **Purpose:** Bulk upload Brands AND Prices together.
         
         ### 📋 File Format Requirements
-        * **File Types:** `.xlsx`, `.xls`, `.csv`
-        * **Sheets:** Supports multiple sheets. All sheets will be scanned.
-        * **Column A:** Must contain **Brand Names**.
-        * **Row 1 & 2:** Ignored (Reserved for headers).
-        * **Row 3:** Data starts here.
+        * **File Types:** `.xlsx`, `.xls`, `.csv` (Multi-sheet supported)
+        * **Rows:** Brand Names (Column A or 'Brand').
+        * **Columns:** Headers must indicate sizes (e.g., `750ml`, `Q`, `1L`).
+        * **Cells:** The Price (₹) for that brand/size.
         
         **Example Layout:**
-        | | A | B |
-        | :--- | :--- | :--- |
-        | **1** | *Header* | ... |
-        | **2** | *Header* | ... |
-        | **3** | **Royal Stag** | ... |
-        | **4** | **Old Monk** | ... |
+        | Brand Name | 750ml | 375ml | 180ml |
+        | :--- | :--- | :--- | :--- |
+        | Royal Stag | 540 | 270 | 140 |
+        | Old Monk | 400 | 200 | 100 |
         """)
         
-        uploaded_file = st.file_uploader("Choose file", type=["xlsx", "xls", "csv"])
+        uploaded_file = st.file_uploader("Upload Price List", type=["xlsx", "xls", "csv"])
         
         if uploaded_file:
-            if st.button("Process Import"):
-                all_brands = set()
+            if st.button("🚀 Process Import"):
                 try:
+                    # 1. Parse File & Sheets
                     file_ext = uploaded_file.name.split('.')[-1].lower()
+                    data_dict = {}
+                    
                     if file_ext == 'csv':
-                        df = pd.read_csv(uploaded_file, header=None, skiprows=2)
-                        brands_found = df[0].dropna().astype(str).tolist()
-                        all_brands.update(brands_found)
-                    elif file_ext in ['xlsx', 'xls']:
-                        xls_data = pd.read_excel(uploaded_file, sheet_name=None, header=None, skiprows=2)
-                        for sheet_name, df in xls_data.items():
-                            if not df.empty:
-                                brands_found = df[0].dropna().astype(str).tolist()
-                                all_brands.update(brands_found)
-                                st.write(f"Found {len(brands_found)} brands in sheet: *{sheet_name}*")
-
-                    count = 0
-                    for b in all_brands:
-                        clean_name = b.strip()
-                        if len(clean_name) > 0:
-                            try:
-                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
-                                bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
-                                for v in VARIANTS:
-                                    conn.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 0.0))
-                                count += 1
-                            except sqlite3.IntegrityError:
-                                pass
-
-                    conn.commit()
-                    if count > 0:
-                        st.success(f"✅ Successfully imported {count} new brands!")
+                        data_dict['Default'] = pd.read_csv(uploaded_file)
                     else:
-                        st.warning("No new brands found (duplicates skipped).")
+                        data_dict = pd.read_excel(uploaded_file, sheet_name=None)
+                    
+                    total_brands_touched = 0
+                    total_prices_updated = 0
+                    
+                    # 2. Iterate through all sheets
+                    for sheet_name, df_imp in data_dict.items():
+                        if df_imp.empty: continue
+                        
+                        # Clean Headers
+                        df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
+                        
+                        # 3. Map Columns to System Variants
+                        variant_map = {
+                            "2l": "2L", "2000ml": "2L",
+                            "1l": "1L", "1000ml": "1L", "full": "1L",
+                            "q": "Q", "750ml": "Q", "qt": "Q", "quart": "Q",
+                            "p": "P", "375ml": "P", "pint": "P", "half": "P",
+                            "n": "N", "180ml": "N", "nip": "N", "quarter": "N"
+                        }
+                        
+                        # Find which columns in this sheet match our sizes
+                        found_maps = {} 
+                        for col in df_imp.columns:
+                            for key, sys_var in variant_map.items():
+                                if key in col: # e.g. "mrp 750ml" matches "750ml"
+                                    found_maps[col] = sys_var
+                                    break
+                        
+                        if not found_maps:
+                            st.warning(f"⚠️ Sheet '{sheet_name}': No size columns found. Skipping.")
+                            continue
+                            
+                        # 4. Identify Brand Column
+                        brand_col = df_imp.columns[0] # Default to first col
+                        for c in df_imp.columns:
+                            if 'brand' in c or 'name' in c or 'item' in c:
+                                brand_col = c
+                                break
+                        
+                        # 5. Process Rows
+                        st.write(f"Processing sheet: *{sheet_name}*...")
+                        
+                        for _, row in df_imp.iterrows():
+                            raw_brand = str(row[brand_col]).strip()
+                            if not raw_brand or raw_brand.lower() == 'nan': continue
+                            
+                            # A. Ensure Brand Exists (Create if Missing)
+                            try:
+                                # Try inserting new brand
+                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (raw_brand, True))
+                                bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
+                                
+                                # If new, create empty price rows for ALL variants first
+                                for v in VARIANTS:
+                                    conn.execute("INSERT OR IGNORE INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
+                                
+                            except sqlite3.IntegrityError:
+                                # Brand exists, fetch its ID
+                                cur = conn.cursor()
+                                cur.execute("SELECT id FROM brands WHERE name=?", (raw_brand,))
+                                res = cur.fetchone()
+                                if res:
+                                    bid = res[0]
+                                else:
+                                    continue # Should not happen
+
+                            total_brands_touched += 1
+
+                            # B. Update Prices based on mapped columns
+                            for col_name, sys_var in found_maps.items():
+                                try:
+                                    # Get Price from cell
+                                    val = row[col_name]
+                                    price_val = float(val)
+                                except:
+                                    price_val = 0.0
+                                
+                                if price_val > 0:
+                                    # Update the specific variant price
+                                    conn.execute("""
+                                        UPDATE prices 
+                                        SET price = ? 
+                                        WHERE brand_id = ? AND variant = ?
+                                    """, (price_val, bid, sys_var))
+                                    total_prices_updated += 1
+                                    
+                    conn.commit()
+                    
+                    if total_brands_touched > 0:
+                        st.success(f"✅ Import Complete!")
+                        st.info(f"• Processed {total_brands_touched} brands.\n• Updated {total_prices_updated} price entries.")
+                        st.balloons()
+                    else:
+                        st.warning("No valid brand data found.")
                         
                 except Exception as e:
-                    st.error(f"❌ Import failed: {e}")
+                    st.error(f"❌ Import Failed: {e}")
 
     # --- 5. SETTINGS ---
     elif menu == "Settings":
