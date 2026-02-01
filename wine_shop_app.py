@@ -821,79 +821,107 @@ def admin_view():
             else:
                 st.caption("No stock receipts recorded yet for this date.")
 
-    # --- 3. BRAND MANAGER ---
+    # --- 3. BRAND MANAGER (STRICT DUPLICATE CHECK) ---
     elif menu == "Brand Manager":
         st.header("🏷️ Manage Brands & Prices")
         st.markdown("""
-        **Purpose:** Add new brand names or update the selling price for existing brands.
-        * **Add Brand:** Creates a new brand entry with 0 price.
-        * **Edit Prices:** Sets the selling price (used for Revenue calculation).
+        **Purpose:** Add new brands or update selling prices.
+        * **Duplicate Protection:** Ignores spaces and capitalization (e.g., "100pipers" matches "100 Pipers").
         """)
         
-        # --- 1. Add New Brand ---
+        # --- A. ADD NEW BRAND (Enhanced Check) ---
         with st.expander("➕ Add New Brand Manually"):
-            new_brand = st.text_input("New Brand Name")
+            new_brand_raw = st.text_input("New Brand Name")
+            
             if st.button("Add Brand"):
-                if new_brand:
-                    try:
-                        conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (new_brand, True))
-                        bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
-                        # Create default prices
-                        for v in VARIANTS:
-                            conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, ?)", (bid, v, 0.0))
-                        conn.commit()
-                        st.success(f"Added {new_brand}!")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("Brand already exists.")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+                if new_brand_raw:
+                    # 1. Prepare "Pretty" Name for Storage
+                    # .split() + .join() ensures single spaces between words and trims ends
+                    clean_name = " ".join(new_brand_raw.split()).title()
+                    
+                    # 2. Prepare "Strict" Key for Checking
+                    # Remove ALL spaces and make lowercase: "100 Pipers" -> "100pipers"
+                    search_key = clean_name.lower().replace(" ", "")
+                    
+                    # 3. Check DB ignoring spaces
+                    # SQL Logic: LOWER(REPLACE(name, ' ', '')) converts DB entry '100 Pipers' to '100pipers'
+                    existing = pd.read_sql(
+                        "SELECT name FROM brands WHERE LOWER(REPLACE(name, ' ', '')) = ?", 
+                        conn, 
+                        params=(search_key,)
+                    )
+                    
+                    if not existing.empty:
+                        real_name = existing.iloc[0]['name']
+                        st.error(f"❌ Duplicate prevented! Matches existing brand: **'{real_name}'**")
+                    else:
+                        try:
+                            # 4. Insert Brand
+                            conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
+                            bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
+                            
+                            # 5. Create Default Prices
+                            for v in VARIANTS:
+                                conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
+                            conn.commit()
+                            st.success(f"✅ Added '{clean_name}' successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error adding brand: {e}")
 
         st.divider()
 
-        # --- 2. Edit Prices (SELF-HEALING VERSION) ---
+        # --- B. EDIT PRICES (Same as before) ---
         st.subheader("Edit Prices")
-        brands_df = get_brands()
+        
+        # Get Brands with IDs
+        brands_df = pd.read_sql("SELECT id, name FROM brands ORDER BY name", conn)
         
         if not brands_df.empty:
-            b_sel = st.selectbox("Select Brand to Edit", brands_df['name'])
+            brands_df['label'] = brands_df['name'] + " (ID: " + brands_df['id'].astype(str) + ")"
+            sel_label = st.selectbox("Select Brand to Edit", brands_df['label'])
             
-            if b_sel:
-                bid = brands_df[brands_df['name'] == b_sel].iloc[0]['id']
-                prices = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
+            if sel_label:
+                bid = int(brands_df[brands_df['label'] == sel_label].iloc[0]['id'])
+                b_name = brands_df[brands_df['label'] == sel_label].iloc[0]['name']
                 
-                # Auto-fix missing prices
-                if len(prices) < len(VARIANTS):
-                    st.toast(f"⚠️ Repairing data for {b_sel}...")
-                    for v in VARIANTS:
-                        conn.execute("INSERT OR IGNORE INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
+                # Auto-Repair Missing Prices
+                existing_prices = pd.read_sql("SELECT variant FROM prices WHERE brand_id=?", conn, params=(bid,))
+                existing_vars = existing_prices['variant'].tolist()
+                missing_vars = [v for v in VARIANTS if v not in existing_vars]
+                
+                if missing_vars:
+                    for v in missing_vars:
+                        conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
                     conn.commit()
-                    prices = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
+                
+                # Fetch Prices
+                prices_df = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
                 
                 with st.form("price_edit_form"):
-                    st.write(f"Editing prices for: **{b_sel}**")
-                    input_values = {}
+                    st.write(f"Editing prices for: **{b_name}**")
                     cols = st.columns(len(VARIANTS))
+                    input_values = {}
                     
                     for i, v_name in enumerate(VARIANTS):
-                        row = prices[prices['variant'] == v_name]
+                        row = prices_df[prices_df['variant'] == v_name]
                         current_val = 0.0
                         if not row.empty:
-                            current_val = row.iloc[0]['price']
+                            current_val = float(row.iloc[0]['price'])
                         
                         with cols[i]:
-                            new_val = st.number_input(f"{v_name}", value=float(current_val), min_value=0.0, step=10.0, key=f"price_{bid}_{v_name}")
+                            new_val = st.number_input(f"{v_name}", value=current_val, min_value=0.0, step=10.0, key=f"p_{bid}_{v_name}")
                             input_values[v_name] = new_val
                     
-                    st.caption("Enter price in Rupees (₹)")
+                    st.caption("Prices are in Rupees (₹).")
                     if st.form_submit_button("💾 Save Updated Prices"):
                         for var, price in input_values.items():
                             conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (price, bid, var))
                         conn.commit()
-                        st.success(f"Prices for {b_sel} updated!")
+                        st.success(f"✅ Prices updated for {b_name}!")
                         st.rerun()
         else:
-            st.info("No brands found in database.")
+            st.info("No brands found.")
 
     # --- 4. IMPORT EXCEL (MASTER PRICE LIST) ---
     elif menu == "Import Excel":
