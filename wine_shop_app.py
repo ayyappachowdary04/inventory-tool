@@ -7,6 +7,7 @@ import os
 import pdfplumber
 
 # --- PDF PARSING HELPER ---
+# --- PDF PARSING HELPER (FIXED) ---
 def parse_pdf_receipt(uploaded_file, db_brands_list):
     """
     Extracts inventory data from the specific PDF format provided.
@@ -15,10 +16,9 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
     extracted_data = []
     
     # 1. Conversion Logic (Cases -> Bottles)
-    # Map Size (ml) -> Bottles per Case
     case_conversion = {
         1000: 9, 2000: 9, 
-        750: 12, 650: 12, # Assuming 650ml beers are 12/case
+        750: 12, 650: 12, 
         375: 24, 
         180: 48
     }
@@ -26,91 +26,71 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
     # Map Size (ml) -> App Variant Code
     size_to_variant = {
         2000: "2L", 1000: "1L", 
-        750: "Q", 650: "Q", # Map Beer 650 to Q (closest match for size category)
+        750: "Q", 650: "Q",
         375: "P", 
         180: "N"
     }
 
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
-            # Extract table. pdfplumber is good at finding grid lines.
             tables = page.extract_tables()
             
             for table in tables:
-                # We need to find the specific inventory table.
-                # Heuristic: Look for header row containing "Brand Name" and "Size"
+                # Find header row
                 header_idx = -1
                 for i, row in enumerate(table):
-                    # Clean row to simple text for checking
                     row_text = [str(x).lower().replace('\n', ' ') for x in row if x]
+                    # Look for specific keywords in your PDF
                     if any("brand name" in x for x in row_text) and any("size" in x for x in row_text):
                         header_idx = i
                         break
                 
                 if header_idx != -1:
-                    # Found the table! Process rows below header.
-                    # Column Mapping (based on standard layout in your PDF):
-                    # Usually: [SlNo, BrandNum, BrandName, Type, Size, QtyCases, ...]
-                    # We need to be dynamic to find the indices
                     headers = [str(x).lower().replace('\n', ' ') for x in table[header_idx] if x]
                     
-                    # Find indices (safeguard against shifting columns)
                     try:
                         col_brand = next(i for i, h in enumerate(headers) if "brand name" in h)
                         col_size  = next(i for i, h in enumerate(headers) if "size" in h)
-                        # Qty Cases is usually "Qty (Cases...)"
+                        # Look for 'cases' column specifically
                         col_cases = next(i for i, h in enumerate(headers) if "cases" in h)
-                        # Sometimes there is a separate "Bottles" column for loose bottles
-                        col_btls  = next((i for i, h in enumerate(headers) if "bottles" in h and "cases" not in h), None)
                     except StopIteration:
-                        continue # Header found but columns confusing, skip table
+                        continue 
 
                     # Process Data Rows
                     for row in table[header_idx+1:]:
                         if not row or len(row) < 3: continue
                         
-                        # Extract Raw Data
                         raw_brand = str(row[col_brand]).strip()
                         raw_size  = str(row[col_size]).strip()
                         raw_cases = str(row[col_cases]).strip()
                         
-                        # Skip total rows or garbage
                         if "total" in raw_brand.lower(): continue
                         
                         # 1. Parse Size
                         try:
                             size_ml = int(''.join(filter(str.isdigit, raw_size)))
                         except:
-                            continue # Skip if no valid size
+                            continue
 
-                        # 2. Parse Qty
-                        # Clean numbers (sometimes "1" comes as "1.00" or with spaces)
+                        # 2. Parse Qty (Strictly Cases)
                         try:
-                            cases = float(raw_cases.split('/')[0]) # Handle "1/0" formats if any
+                            # Handle formats like "1" or "1/0" or "1.0"
+                            cases_str = raw_cases.split('/')[0].strip()
+                            cases = float(cases_str)
                         except:
                             cases = 0
                             
-                        loose_bottles = 0
-                        if col_btls is not None and len(row) > col_btls:
-                             try:
-                                 loose_bottles = float(str(row[col_btls]).split('/')[0])
-                             except:
-                                 loose_bottles = 0
-
-                        # CALCULATION: Total Bottles = (Cases * Factor) + Loose
-                        factor = case_conversion.get(size_ml, 12) # Default to 12 if unknown
-                        total_qty = int((cases * factor) + loose_bottles)
+                        # CALCULATION: Cases * Factor
+                        factor = case_conversion.get(size_ml, 12) 
+                        total_qty = int(cases * factor)
                         
                         if total_qty <= 0: continue
 
-                        # 3. Match Brand Name (Fuzzy Match)
-                        # We look for the DB Brand Name INSIDE the PDF string.
-                        # e.g. DB="Vat 69", PDF="VAT 69 BLENDED SCOTCH..." -> Match!
+                        # 3. Match Brand Name
                         matched_id = None
                         matched_name = None
                         
-                        # Sort DB brands by length desc so "Royal Stag Reserve" matches before "Royal Stag"
-                        # (This helps specificity, though strict "in" check usually works)
+                        # Fuzzy match: "Vat 69" in "VAT 69 BLENDED SCOTCH..."
                         for db_name, db_id in db_brands_list:
                             if db_name.lower() in raw_brand.lower():
                                 matched_id = db_id
@@ -121,11 +101,11 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
                             variant_code = size_to_variant.get(size_ml)
                             if variant_code:
                                 extracted_data.append({
-                                    "brand_id": matched_id,
+                                    "brand_id": int(matched_id), # Ensure INT
                                     "brand_name": matched_name,
                                     "variant": variant_code,
                                     "qty": total_qty,
-                                    "raw_pdf_brand": raw_brand # For debugging
+                                    "raw_pdf_brand": raw_brand
                                 })
     
     return pd.DataFrame(extracted_data)
