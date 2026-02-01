@@ -1075,33 +1075,52 @@ def admin_view():
 
         st.divider()
 
-        # --- D. DANGER ZONE (RESET INVENTORY) ---
+        # --- D. DANGER ZONE ---
         st.subheader("⚠️ Danger Zone")
-        st.markdown("""
-        **Reset Inventory Data:**
-        * This will **DELETE ALL** daily stock records (Opening, Closing, Sold, Revenue).
-        * It **KEEPS** your Brand Names and Prices.
-        * Use this when you want to start fresh (e.g., New Financial Year).
-        """)
         
-        with st.form("reset_inventory_form"):
-            # Safety Checkbox
-            confirm_reset = st.checkbox("I understand this action is permanent and cannot be undone.")
-            
-            # Delete Button
-            if st.form_submit_button("🔥 Clear All Inventory History"):
-                if confirm_reset:
-                    try:
-                        # The Command: Deletes all rows from 'inventory' table
-                        conn.execute("DELETE FROM inventory")
-                        conn.commit()
-                        
-                        st.error("✅ ALL Inventory Data has been wiped.")
-                        st.toast("System Reset Complete.")
-                    except Exception as e:
-                        st.error(f"Error resetting data: {e}")
-                else:
-                    st.warning("❌ You must check the confirmation box above to proceed.")
+        # 1. RESET INVENTORY (Existing)
+        with st.expander("🔥 Clear Inventory History (Keep Brands)", expanded=True):
+            st.markdown("""
+            **Action:** Deletes all daily counts (Opening, Closing, Sold).
+            **Result:** Sales history is wiped, but Brands & Prices remain.
+            """)
+            with st.form("reset_inventory_form"):
+                confirm_inv = st.checkbox("I confirm I want to delete all INVENTORY history.")
+                if st.form_submit_button("Clear Inventory Data"):
+                    if confirm_inv:
+                        try:
+                            conn.execute("DELETE FROM inventory")
+                            conn.commit()
+                            st.error("✅ Inventory history has been wiped.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                    else:
+                        st.warning("Please check the confirmation box.")
+
+        # 2. RESET BRANDS & PRICES (New)
+        with st.expander("💀 Delete All Brands & Prices (Full Reset)", expanded=False):
+            st.markdown("""
+            **Action:** Deletes ALL Brand Names and their Prices.
+            **Warning:** This will corrupt any existing inventory history if you don't clear it first.
+            **Result:** The system will be completely empty (no products).
+            """)
+            with st.form("reset_brands_form"):
+                confirm_brand = st.checkbox("I confirm I want to delete ALL BRANDS and PRICES.")
+                
+                if st.form_submit_button("Delete Brands & Prices"):
+                    if confirm_brand:
+                        try:
+                            # It is safest to clear inventory first to avoid orphaned data
+                            conn.execute("DELETE FROM inventory") 
+                            conn.execute("DELETE FROM prices")
+                            conn.execute("DELETE FROM brands")
+                            conn.commit()
+                            st.error("✅ System Wiped: All Brands, Prices, and Inventory deleted.")
+                            st.toast("Master List Cleared.")
+                        except Exception as e:
+                            st.error(f"Error deleting brands: {e}")
+                    else:
+                        st.warning("Please check the confirmation box.")
 # --- MAIN APP ROUTING ---
 if 'role' not in st.session_state:
     login_screen()
