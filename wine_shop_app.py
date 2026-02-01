@@ -706,6 +706,36 @@ def admin_view():
                         
                 except Exception as e:
                     st.error(f"❌ Import failed: {e}")
+    elif menu == "Settings":
+        st.header("⚙️ Admin Settings")
+        
+        # 1. Change Admin Password (from previous step)
+        with st.expander("👤 Change Admin Password", expanded=False):
+            with st.form("change_pass_form"):
+                current_user = st.session_state.get('user', 'admin')
+                new_pass = st.text_input("New Admin Password", type="password")
+                if st.form_submit_button("Update My Password"):
+                    conn.execute("UPDATE users SET password=? WHERE username=?", (new_pass, current_user))
+                    conn.commit()
+                    st.success("Admin password updated.")
+
+        # --- NEW: Change Shopkeeper PIN ---
+        st.divider()
+        st.subheader("🏪 Shopkeeper Access")
+        with st.form("change_pin_form"):
+            st.write("Update the PIN used by shopkeepers on the main login screen.")
+            new_pin = st.text_input("New Shopkeeper PIN", max_chars=6)
+            
+            if st.form_submit_button("Update PIN"):
+                if len(new_pin) > 0:
+                    try:
+                        conn.execute("UPDATE users SET password=? WHERE username='shopkeeper'", (new_pin,))
+                        conn.commit()
+                        st.success(f"Shopkeeper PIN changed to: {new_pin}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                else:
+                    st.error("PIN cannot be empty.")
 # --- MAIN APP ROUTING ---
 if 'role' not in st.session_state:
     login_screen()
