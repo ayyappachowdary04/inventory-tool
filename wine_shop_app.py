@@ -269,8 +269,13 @@ def shopkeeper_view():
     st.markdown("### 🏪 Daily Closing Entry")
     st.info("ℹ️ Workflow: Select a date, enter closing stock counts, review the totals, and submit to Admin.")
     
-    # 1. Date Selection
-    date = st.date_input("Select Date", datetime.date.today())
+    # 1. DATE SELECTION (Restricted to Today & Future)
+    # min_value=datetime.date.today() ensures they cannot edit past history.
+    date = st.date_input(
+        "Select Date", 
+        datetime.date.today(), 
+        min_value=datetime.date.today()
+    )
     date_str = date.strftime("%Y-%m-%d")
     
     # Initialize the day if it doesn't exist
@@ -291,99 +296,161 @@ def shopkeeper_view():
             return
 
         # --- TABS FOR ENTRY METHOD ---
-        tab_wiz, tab_import, tab_preview = st.tabs(["🧙‍♂️ Manual Wizard", "📂 Import Excel/CSV", "👀 Final Preview"])
+        tab_wiz, tab_import, tab_preview = st.tabs(["🧙‍♂️ Manual Wizard", "📂 Import Excel/CSV", "👀 Final Preview (Report)"])
 
-        # --- TAB 1: EXISTING MANUAL WIZARD ---
+        # ============================================================
+        # TAB 1: MANUAL WIZARD (Search, Prev/Next, Validation)
+        # ============================================================
         with tab_wiz:
             st.markdown("""
-            **Best for:** Making small corrections or entering data for just a few brands.
-            * Navigate brand-by-brand using the **Next** button.
-            * System auto-saves as you go.
+            **Instructions:**
+            * Use **Search** to jump to a specific brand.
+            * **Validation:** You cannot enter a number higher than the available stock.
+            * **Note:** Sizes with 0 stock are hidden automatically.
             """)
             st.divider()
             
-            brands = df['name'].unique()
-            if 'wiz_idx' not in st.session_state: st.session_state['wiz_idx'] = 0
-            idx = st.session_state['wiz_idx']
+            brands = sorted(df['name'].unique()) # Sort alphabetically
             
-            if idx < len(brands):
-                current_brand = brands[idx]
-                brand_rows = df[df['name'] == current_brand]
-                
-                st.info(f"Brand {idx + 1} of {len(brands)}")
-                st.markdown(f"## 🍾 {current_brand}")
-                
-                with st.form(key=f"form_{idx}"):
-                    updates = {}
-                    for _, row in brand_rows.iterrows():
-                        v = row['variant']
-                        st.markdown(f"**{v}** (Open: {row['opening']} + Rcv: {row['receipts']})")
-                        max_val = row['opening'] + row['receipts']
-                        closing = st.number_input(f"Closing Stock", min_value=0, value=row['closing'], key=f"wiz_{current_brand}_{v}")
-                        updates[(row['brand_id'], v)] = closing
-                    
-                    if st.form_submit_button("Next Brand ➡️"):
-                        for (bid, var), cl_val in updates.items():
-                            conn.execute("UPDATE inventory SET closing=? WHERE date=? AND brand_id=? AND variant=?",
-                                         (cl_val, date_str, bid, var))
-                        conn.commit()
+            # Initialize Index
+            if 'wiz_idx' not in st.session_state: st.session_state['wiz_idx'] = 0
+            if st.session_state['wiz_idx'] >= len(brands): st.session_state['wiz_idx'] = 0
+            
+            # --- A. SEARCH BAR ---
+            current_brand_name = brands[st.session_state['wiz_idx']]
+            selected_brand = st.selectbox(
+                "🔍 Search / Jump to Brand:", 
+                brands, 
+                index=st.session_state['wiz_idx']
+            )
+            
+            # If user used the dropdown to change brand, update index and rerun
+            if selected_brand != current_brand_name:
+                st.session_state['wiz_idx'] = list(brands).index(selected_brand)
+                st.rerun()
+
+            # --- B. RENDER FORM ---
+            idx = st.session_state['wiz_idx']
+            current_brand = brands[idx]
+            brand_rows = df[df['name'] == current_brand]
+            
+            st.info(f"Brand {idx + 1} of {len(brands)}")
+            st.markdown(f"## 🍾 {current_brand}")
+            
+            # Check total stock for this brand
+            total_brand_stock = (brand_rows['opening'] + brand_rows['receipts']).sum()
+            
+            if total_brand_stock == 0:
+                st.warning(f"⚠️ No stock available for {current_brand} (Opening + Receipts = 0).")
+                # Navigation buttons for empty brand
+                c1, c2 = st.columns([1, 1])
+                if c1.button("⬅️ Previous"):
+                    if idx > 0:
+                        st.session_state['wiz_idx'] -= 1
+                        st.rerun()
+                if c2.button("Next ➡️"):
+                    if idx < len(brands) - 1:
                         st.session_state['wiz_idx'] += 1
                         st.rerun()
             else:
-                st.success("Manual Entry Complete! Please check the **Final Preview** tab to submit.")
-                if st.button("Restart Wizard"):
-                    st.session_state['wiz_idx'] = 0
-                    st.rerun()
+                with st.form(key=f"form_{idx}"):
+                    updates = {}
+                    has_visible_variants = False
+                    
+                    # Create input fields ONLY if stock > 0
+                    for _, row in brand_rows.iterrows():
+                        v = row['variant']
+                        max_val = row['opening'] + row['receipts']
+                        
+                        if max_val > 0:
+                            has_visible_variants = True
+                            st.markdown(f"**{v}** (Available: {max_val})")
+                            
+                            # STRICT VALIDATION: max_value prevents invalid entry
+                            closing = st.number_input(
+                                f"Closing Stock ({v})", 
+                                min_value=0, 
+                                max_value=max_val, 
+                                value=min(row['closing'], max_val),
+                                key=f"wiz_{current_brand}_{v}",
+                                help=f"Cannot exceed {max_val}"
+                            )
+                            updates[(row['brand_id'], v)] = closing
+                        else:
+                            # Keep existing value (0) if hidden
+                            updates[(row['brand_id'], v)] = row['closing']
 
-        # --- TAB 2: IMPORT EXCEL/CSV (DOCUMENTED) ---
+                    if not has_visible_variants:
+                        st.caption("No variants have active stock.")
+
+                    st.divider()
+                    
+                    # --- C. NAVIGATION BUTTONS ---
+                    col_prev, col_next = st.columns([1, 1])
+                    go_prev = col_prev.form_submit_button("⬅️ Previous")
+                    go_next = col_next.form_submit_button("Next ➡️")
+                    
+                    if go_prev or go_next:
+                        # 1. Save Data
+                        for (bid, var), cl_val in updates.items():
+                            conn.execute(
+                                "UPDATE inventory SET closing=? WHERE date=? AND brand_id=? AND variant=?",
+                                (cl_val, date_str, bid, var)
+                            )
+                        conn.commit()
+                        
+                        # 2. Move Index
+                        if go_prev:
+                            if idx > 0:
+                                st.session_state['wiz_idx'] -= 1
+                                st.rerun()
+                            else:
+                                st.toast("Already at the first brand.")
+                                
+                        if go_next:
+                            if idx < len(brands) - 1:
+                                st.session_state['wiz_idx'] += 1
+                                st.rerun()
+                            else:
+                                st.success("You have reached the last brand. Check Final Preview.")
+
+        # ============================================================
+        # TAB 2: IMPORT EXCEL/CSV (Existing Logic)
+        # ============================================================
         with tab_import:
             st.subheader("Import Closing Stock")
             st.markdown("""
-            **Best for:** Uploading the full day's count in one go.
-            
-            ### 📋 File Format Requirements
-            * **File Types:** `.xlsx`, `.xls`, `.csv`
-            * **Columns:** Must contain headers for sizes (e.g., `750ml`, `Q`, `P`, `1L`).
-            * **Rows:** Must contain a column for Brand Name.
-            
-            **Example Layout:**
-            | Brand Name | Q | P | N |
-            | :--- | :--- | :--- | :--- |
-            | Royal Stag | 5 | 10 | 20 |
-            | Old Monk | 2 | 4 | 8 |
+            **Format Requirements:**
+            * **Row 1:** Header with Sizes (e.g., '750ml', 'Q', '1L').
+            * **Column A:** Brand Names.
             """)
             
-            uploaded_file = st.file_uploader("Upload Daily Report", type=["xlsx", "xls", "csv"])
+            uploaded_file = st.file_uploader("Upload Daily Report", type=["xlsx", "xls", "csv"], key="shop_upload")
             
             if uploaded_file:
-                # 1. READ FILE
                 try:
                     file_ext = uploaded_file.name.split('.')[-1].lower()
-                    data_dict = {} # {SheetName: DataFrame}
+                    data_dict = {}
 
                     if file_ext == 'csv':
                         data_dict['Default'] = pd.read_csv(uploaded_file)
                     else:
-                        # Read all sheets
                         data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                     
-                    # 2. SELECT SHEET
                     sheet_options = list(data_dict.keys())
-                    st.write(f"📄 Found {len(sheet_options)} sheet(s).")
-                    
-                    # Try to auto-select sheet matching the date
+                    # Auto-select sheet based on date
                     default_idx = 0
                     for i, s_name in enumerate(sheet_options):
                         if date.strftime("%d") in s_name or date.strftime("%b") in s_name:
                             default_idx = i
                             
-                    selected_sheet = st.selectbox("Select Sheet for Today's Data", sheet_options, index=default_idx)
+                    selected_sheet = st.selectbox("Select Sheet", sheet_options, index=default_idx)
                     
-                    if st.button("Process Closing Stock Import"):
+                    if st.button("Process Import"):
                         df_imp = data_dict[selected_sheet]
                         df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                         
-                        # 3. MAP COLUMNS
+                        # Map Columns
                         variant_map = {
                             "2l": "2L", "2000ml": "2L",
                             "1l": "1L", "1000ml": "1L", "full": "1L",
@@ -400,11 +467,9 @@ def shopkeeper_view():
                                     break
                         
                         if not found_maps:
-                            st.error("❌ No size columns found (e.g., '750ml', 'Q'). Check file headers.")
+                            st.error("❌ No size columns found.")
                         else:
-                            st.success(f"✅ Found Columns: {list(found_maps.keys())}")
-                            
-                            # 4. UPDATE DATABASE
+                            # Update DB
                             match_count = 0
                             db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
                             brand_map = {name.lower().strip(): bid for bid, name in zip(db_brands['id'], db_brands['name'])}
@@ -427,6 +492,9 @@ def shopkeeper_view():
                                         except:
                                             closing_qty = 0
                                         
+                                        # Only update if closing <= available (soft validation for import)
+                                        # We rely on Final Preview to catch hard errors, 
+                                        # but here we update blindly to allow corrections later.
                                         conn.execute("""
                                             UPDATE inventory 
                                             SET closing = ? 
@@ -435,45 +503,87 @@ def shopkeeper_view():
                                     match_count += 1
                                     
                             conn.commit()
-                            st.success(f"✅ Successfully updated closing stock for {match_count} brands!")
-                            st.balloons()
+                            st.success(f"✅ Imported {match_count} brands!")
                             
                 except Exception as e:
-                    st.error(f"Error parsing file: {e}")
+                    st.error(f"Import Error: {e}")
 
-        # --- TAB 3: PREVIEW & SUBMIT (DOCUMENTED) ---
+        # ============================================================
+        # TAB 3: FINAL PREVIEW (New Multi-Header Format)
+        # ============================================================
         with tab_preview:
-            st.subheader("Review & Submit")
-            st.markdown("""
-            **Final Step:**
-            1. Review the calculated **Sold** and **Revenue** numbers below.
-            2. If you see any **red warnings** (Sold < 0), please fix the closing stock in the Wizard or Import tab.
-            3. Click **Submit to Admin** to lock this entry.
-            """)
+            st.subheader("📊 Final Daily Report")
             
-            # Recalculate totals
-            df_final = get_inventory(date_str)
-            df_final['sold'] = (df_final['opening'] + df_final['receipts']) - df_final['closing']
-            df_final['revenue'] = df_final['sold'] * df_final['price']
+            # 1. Prepare Data
+            # 'Available' = Opening + Receipts
+            df['available'] = df['opening'] + df['receipts']
+            df['sold'] = df['available'] - df['closing']
+            df['item_revenue'] = df['sold'] * df['price']
             
-            total_rev = df_final['revenue'].sum()
-            st.metric("Total Revenue Estimate", f"₹{total_rev:,.2f}")
-            
-            # Show negative stock warning
-            negatives = df_final[df_final['sold'] < 0]
+            # 2. Check for Negative Sales (CRITICAL VALIDATION)
+            negatives = df[df['sold'] < 0]
             if not negatives.empty:
-                st.error("⚠️ Warning: Some items have Closing Stock > Opening + Receipts!")
-                st.dataframe(negatives[['name', 'variant', 'opening', 'receipts', 'closing', 'sold']])
+                st.error("❌ ERROR: You have entered Closing Stock > Available Stock.")
+                st.write("Please fix the following brands in the Wizard or Import tab:")
+                st.dataframe(negatives[['name', 'variant', 'available', 'closing', 'sold']])
+                st.stop() # Stop rendering report
+
+            # 3. Create Pivot Tables for the "Wide" View
+            variants_order = ["2L", "1L", "Q", "P", "N"]
             
-            st.dataframe(df_final[['name', 'variant', 'closing', 'sold', 'revenue']], use_container_width=True)
+            def make_pivot(val_col):
+                # Pivot: Index=Brand, Col=Variant, Val=Value
+                p = df.pivot_table(index='name', columns='variant', values=val_col, aggfunc='sum').fillna(0)
+                # Ensure all variants exist as columns
+                for v in variants_order:
+                    if v not in p.columns: p[v] = 0
+                return p[variants_order] # Enforce standard order
             
-            if st.button("Submit to Admin 📤"):
-                if not negatives.empty:
-                    st.error("Cannot submit while there are negative sales errors. Please fix closing counts.")
-                else:
-                    conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date_str,))
-                    conn.commit()
-                    st.success("Submitted to Admin successfully!")
+            # Create the 3 Sections
+            p_open = make_pivot('available')
+            p_close = make_pivot('closing')
+            p_sold = make_pivot('sold')
+            
+            # Calculate Total Revenue per Brand
+            revenue_series = df.groupby('name')['item_revenue'].sum()
+            
+            # 4. Construct MultiIndex Headers (The 2-Row Header)
+            # Section 1: Opening
+            p_open.columns = pd.MultiIndex.from_product([['1. Opening Stock (Inc. Receipts)'], p_open.columns])
+            # Section 2: Closing
+            p_close.columns = pd.MultiIndex.from_product([['2. Closing Stock'], p_close.columns])
+            # Section 3: Sold
+            p_sold.columns = pd.MultiIndex.from_product([['3. Sales & Revenue'], p_sold.columns])
+            
+            # 5. Combine All Sections
+            final_df = pd.concat([p_open, p_close, p_sold], axis=1)
+            
+            # Add Total Revenue Column
+            final_df[('3. Sales & Revenue', 'Total Revenue (₹)')] = revenue_series
+            
+            # Fill NaNs
+            final_df = final_df.fillna(0)
+            
+            # 6. Display the Report
+            st.dataframe(
+                final_df, 
+                use_container_width=True, 
+                height=600,
+                column_config={
+                    ('3. Sales & Revenue', 'Total Revenue (₹)'): st.column_config.NumberColumn(format="₹ %.2f")
+                }
+            )
+            
+            # 7. Total Summary Metrics
+            total_rev = df['item_revenue'].sum()
+            st.metric("💰 Total Shop Revenue", f"₹ {total_rev:,.2f}")
+            
+            # 8. Submit Button
+            if st.button("✅ Submit Final Report to Admin", type="primary"):
+                conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date_str,))
+                conn.commit()
+                st.balloons()
+                st.success("Report Submitted Successfully!")
 
 # --- ADMIN VIEW ---
 def admin_view():
