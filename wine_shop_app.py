@@ -920,6 +920,23 @@ def admin_view():
                         st.error(f"Error: {e}")
                 else:
                     st.error("PIN cannot be empty.")
+        st.divider()
+        st.subheader("💾 System Backup")
+        st.markdown("Download a copy of the entire database to keep your data safe.")
+        
+        # Read the DB file as binary
+        try:
+            with open("wineshop.db", "rb") as f:
+                db_bytes = f.read()
+                
+            st.download_button(
+                label="📥 Download Database Backup (.db)",
+                data=db_bytes,
+                file_name=f"wineshop_backup_{datetime.date.today()}.db",
+                mime="application/octet-stream"
+            )
+        except Exception as e:
+            st.error(f"Could not read database file: {e}")
 # --- MAIN APP ROUTING ---
 if 'role' not in st.session_state:
     login_screen()
