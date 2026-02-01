@@ -230,7 +230,7 @@ def shopkeeper_view():
 # --- ADMIN VIEW ---
 def admin_view():
     st.sidebar.title("Admin Menu")
-    menu = st.sidebar.radio("Go to", ["Dashboard", "Brand Manager", "Import Excel"])
+    menu = st.sidebar.radio("Go to", ["Dashboard", "Brand Manager", "Import Excel", "Settings"])
 
     if menu == "Settings":
         st.header("⚙️ Admin Settings")
