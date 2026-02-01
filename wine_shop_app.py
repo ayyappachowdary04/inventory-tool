@@ -25,29 +25,35 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # Brands Table
+    # 1. Create Brands
     c.execute('''CREATE TABLE IF NOT EXISTS brands 
                  (id INTEGER PRIMARY KEY, name TEXT UNIQUE, is_alcohol BOOLEAN)''')
     
-    # Prices Table (Brand ID, Variant, Price)
+    # 2. Create Prices
     c.execute('''CREATE TABLE IF NOT EXISTS prices 
-                 (brand_id INTEGER, variant TEXT, price REAL, 
-                  UNIQUE(brand_id, variant))''')
+                 (brand_id INTEGER, variant TEXT, price REAL, UNIQUE(brand_id, variant))''')
     
-    # Inventory Table
-    # Status: 0=Draft, 1=Pending, 2=Approved/Locked
+    # 3. Create Inventory
     c.execute('''CREATE TABLE IF NOT EXISTS inventory 
                  (date TEXT, brand_id INTEGER, variant TEXT, 
                   opening INTEGER, receipts INTEGER, closing INTEGER, 
                   status INTEGER, UNIQUE(date, brand_id, variant))''')
     
-    # Seed Data if empty
+    # 4. CREATE USERS TABLE (This is likely the missing part!)
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (username TEXT PRIMARY KEY, password TEXT)''')
+    
+    # 5. Create Default Admin
+    c.execute("SELECT count(*) FROM users WHERE username='admin'")
+    if c.fetchone()[0] == 0:
+        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("admin", "admin"))
+
+    # Seed Brands
     c.execute("SELECT count(*) FROM brands")
     if c.fetchone()[0] == 0:
         for b in INITIAL_BRANDS:
             c.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (b, True))
             bid = c.lastrowid
-            # Default dummy prices
             for v in VARIANTS:
                 c.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 500.0))
     
