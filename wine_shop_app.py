@@ -346,9 +346,17 @@ def admin_view():
     # --- 1. DASHBOARD ---
     if menu == "Dashboard":
         st.header("📋 Approval Dashboard")
+        st.markdown("""
+        **Overview:**
+        * View daily sales summaries.
+        * Approve or Reject closing stock submissions from shopkeepers.
+        * Export inventory reports to CSV for accounting.
+        """)
         
         # Export Data Button
         st.subheader("Export Data")
+        st.info("ℹ️ Select a date to download a complete report of Opening, Receipts, Closing, and Revenue.")
+        
         export_date = st.date_input("Select Date for Report", datetime.date.today())
         date_str = export_date.strftime("%Y-%m-%d")
         
@@ -359,17 +367,18 @@ def admin_view():
             csv_data = df_export[['name', 'variant', 'opening', 'receipts', 'closing', 'sold', 'revenue', 'status']].to_csv(index=False).encode('utf-8')
             st.download_button(label="📥 Download CSV Report", data=csv_data, file_name=f"inventory_{date_str}.csv", mime="text/csv")
         else:
-            st.info(f"No data found for {date_str}")
+            st.warning(f"No data found for {date_str}")
             
         st.divider()
         
         # Pending Approvals
+        st.subheader("Pending Approvals")
         pending = pd.read_sql("SELECT DISTINCT date FROM inventory WHERE status=1", conn)
         if pending.empty:
-            st.info("No pending approvals.")
+            st.success("All caught up! No pending approvals.")
         else:
             for d in pending['date']:
-                with st.expander(f"Pending: {d}"):
+                with st.expander(f"🔔 Pending Submission: {d}"):
                     data = get_inventory(d)
                     data['sold'] = (data['opening'] + data['receipts']) - data['closing']
                     data['revenue'] = data['sold'] * data['price']
@@ -388,10 +397,14 @@ def admin_view():
                         st.warning(f"Returned {d} to Shopkeeper")
                         st.rerun()
 
-    # --- 2. NEW: STOCK INTAKE (RECEIPTS) ---
     # --- 2. STOCK INTAKE (RECEIPTS) ---
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
+        st.markdown("""
+        **Purpose:** Log new inventory deliveries (e.g., from a distributor).  
+        **Effect:** Updates the 'Receipts' count.  
+        `Sold = Opening + Receipts - Closing`
+        """)
         
         # Select Date & Initialize
         date_in = st.date_input("Date of Receipt", datetime.date.today())
@@ -409,7 +422,7 @@ def admin_view():
             
             # === TAB 1: MANUAL ENTRY ===
             with tab_manual:
-                st.info(f"Adding stock manually for: {date_str}")
+                st.info(f"Manually enter quantities for a single brand for {date_str}.")
                 brands_df = get_brands()
                 brand_sel = st.selectbox("Select Brand Received", brands_df['name'])
                 
@@ -442,10 +455,16 @@ def admin_view():
             with tab_import:
                 st.subheader("📂 Bulk Import Receipts")
                 st.markdown("""
-                **Instructions:**
-                1. Upload a file (.xlsx, .xls, .csv).
-                2. Select the **Sheet** corresponding to today's date.
-                3. Ensure headers contain sizes (e.g., '750ml', 'Q', '1L').
+                ### 📋 File Format Requirements
+                * **File Types:** `.xlsx`, `.xls`, `.csv`
+                * **Sheets:** Supports multiple sheets. You will select one sheet to import.
+                * **Columns:** Must contain headers indicating sizes (e.g., `750ml`, `Q`, `1L`, `Full`, `Half`).
+                * **Rows:** Must contain a column for Brand Name.
+                
+                **Example Layout:**
+                | Brand Name | 750ml | 375ml | 180ml |
+                | :--- | :--- | :--- | :--- |
+                | Royal Stag | 12 | 24 | 48 |
                 """)
                 
                 uploaded_file = st.file_uploader("Upload Receipt File", type=["xlsx", "xls", "csv"], key="receipt_upload")
@@ -462,7 +481,6 @@ def admin_view():
                             data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                         
                         sheet_options = list(data_dict.keys())
-                        st.write(f"📄 Found {len(sheet_options)} sheet(s).")
                         
                         # Auto-guess sheet based on selected date
                         default_idx = 0
@@ -550,10 +568,15 @@ def admin_view():
                 st.dataframe(daily_rec, use_container_width=True)
             else:
                 st.caption("No stock receipts recorded yet for this date.")
-    # --- 3. BRAND MANAGER ---
 
+    # --- 3. BRAND MANAGER ---
     elif menu == "Brand Manager":
-        st.header("🏷️ Manage Brands")
+        st.header("🏷️ Manage Brands & Prices")
+        st.markdown("""
+        **Purpose:** Add new brand names or update the selling price for existing brands.
+        * **Add Brand:** Creates a new brand entry with 0 price.
+        * **Edit Prices:** Sets the selling price (used for Revenue calculation).
+        """)
         
         # --- 1. Add New Brand ---
         with st.expander("➕ Add New Brand Manually"):
@@ -584,106 +607,83 @@ def admin_view():
             b_sel = st.selectbox("Select Brand to Edit", brands_df['name'])
             
             if b_sel:
-                # Get Brand ID
                 bid = brands_df[brands_df['name'] == b_sel].iloc[0]['id']
-                
-                # Fetch current prices
                 prices = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
                 
-                # --- AUTO-FIX: If prices are missing, create them now ---
+                # Auto-fix missing prices
                 if len(prices) < len(VARIANTS):
                     st.toast(f"⚠️ Repairing data for {b_sel}...")
                     for v in VARIANTS:
-                        # Insert only if missing
-                        conn.execute("""
-                            INSERT OR IGNORE INTO prices (brand_id, variant, price) 
-                            VALUES (?, ?, 0.0)
-                        """, (bid, v))
+                        conn.execute("INSERT OR IGNORE INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
                     conn.commit()
-                    # Re-fetch after repair
                     prices = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
                 
-                # --- DISPLAY FORM ---
                 with st.form("price_edit_form"):
                     st.write(f"Editing prices for: **{b_sel}**")
                     input_values = {}
-                    
-                    # Create 5 columns for the 5 variants
                     cols = st.columns(len(VARIANTS))
                     
-                    # We loop through the STANDARD variants list to ensure order (2L, 1L, Q, P, N)
                     for i, v_name in enumerate(VARIANTS):
-                        # Find the row for this variant
                         row = prices[prices['variant'] == v_name]
-                        
-                        # Default to 0.0 if something is still weird, otherwise use DB value
                         current_val = 0.0
                         if not row.empty:
                             current_val = row.iloc[0]['price']
                         
                         with cols[i]:
-                            new_val = st.number_input(
-                                f"{v_name}", 
-                                value=float(current_val),
-                                min_value=0.0,
-                                step=10.0,
-                                key=f"price_{bid}_{v_name}"
-                            )
+                            new_val = st.number_input(f"{v_name}", value=float(current_val), min_value=0.0, step=10.0, key=f"price_{bid}_{v_name}")
                             input_values[v_name] = new_val
                     
                     st.caption("Enter price in Rupees (₹)")
-                    
                     if st.form_submit_button("💾 Save Updated Prices"):
                         for var, price in input_values.items():
-                            conn.execute(
-                                "UPDATE prices SET price=? WHERE brand_id=? AND variant=?", 
-                                (price, bid, var)
-                            )
+                            conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (price, bid, var))
                         conn.commit()
                         st.success(f"Prices for {b_sel} updated!")
                         st.rerun()
         else:
             st.info("No brands found in database.")
 
+    # --- 4. IMPORT EXCEL ---
     elif menu == "Import Excel":
-        st.header("📥 Import Brands")
+        st.header("📥 Import Brands Master List")
         st.markdown("""
-        **Instructions:**
-        * Supports **.xlsx**, **.xls**, and **.csv**.
-        * Reads **Column A** (starting Row 3) for Brand Names.
-        * If file has multiple sheets, **all sheets** will be processed.
+        **Purpose:** Bulk create brand names from an Excel list.
+        
+        ### 📋 File Format Requirements
+        * **File Types:** `.xlsx`, `.xls`, `.csv`
+        * **Sheets:** Supports multiple sheets. All sheets will be scanned.
+        * **Column A:** Must contain **Brand Names**.
+        * **Row 1 & 2:** Ignored (Reserved for headers).
+        * **Row 3:** Data starts here.
+        
+        **Example Layout:**
+        | | A | B |
+        | :--- | :--- | :--- |
+        | **1** | *Header* | ... |
+        | **2** | *Header* | ... |
+        | **3** | **Royal Stag** | ... |
+        | **4** | **Old Monk** | ... |
         """)
         
-        # 1. Accept multiple file types
         uploaded_file = st.file_uploader("Choose file", type=["xlsx", "xls", "csv"])
         
         if uploaded_file:
             if st.button("Process Import"):
-                all_brands = set() # Use a set to automatically avoid duplicates in memory
-                
+                all_brands = set()
                 try:
-                    # 2. Determine File Type & Read Data
                     file_ext = uploaded_file.name.split('.')[-1].lower()
-                    
                     if file_ext == 'csv':
-                        # Read CSV (Single Sheet)
                         df = pd.read_csv(uploaded_file, header=None, skiprows=2)
                         brands_found = df[0].dropna().astype(str).tolist()
                         all_brands.update(brands_found)
-                        
                     elif file_ext in ['xlsx', 'xls']:
-                        # Read Excel (Multiple Sheets)
-                        # sheet_name=None reads ALL sheets into a dictionary
                         xls_data = pd.read_excel(uploaded_file, sheet_name=None, header=None, skiprows=2)
-                        
                         for sheet_name, df in xls_data.items():
                             if not df.empty:
-                                # Assume Column A is index 0
                                 brands_found = df[0].dropna().astype(str).tolist()
                                 all_brands.update(brands_found)
                                 st.write(f"Found {len(brands_found)} brands in sheet: *{sheet_name}*")
 
-                    # 3. Save to Database
                     count = 0
                     for b in all_brands:
                         clean_name = b.strip()
@@ -695,10 +695,9 @@ def admin_view():
                                     conn.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 0.0))
                                 count += 1
                             except sqlite3.IntegrityError:
-                                pass # Brand already exists, skip it
+                                pass
 
                     conn.commit()
-                    
                     if count > 0:
                         st.success(f"✅ Successfully imported {count} new brands!")
                     else:
@@ -706,10 +705,12 @@ def admin_view():
                         
                 except Exception as e:
                     st.error(f"❌ Import failed: {e}")
+
+    # --- 5. SETTINGS ---
     elif menu == "Settings":
         st.header("⚙️ Admin Settings")
+        st.markdown("**Purpose:** Manage access credentials for yourself and shopkeepers.")
         
-        # 1. Change Admin Password (from previous step)
         with st.expander("👤 Change Admin Password", expanded=False):
             with st.form("change_pass_form"):
                 current_user = st.session_state.get('user', 'admin')
@@ -719,7 +720,6 @@ def admin_view():
                     conn.commit()
                     st.success("Admin password updated.")
 
-        # --- NEW: Change Shopkeeper PIN ---
         st.divider()
         st.subheader("🏪 Shopkeeper Access")
         with st.form("change_pin_form"):
