@@ -99,20 +99,28 @@ def login_screen():
     if role == "Shopkeeper":
         pin = st.text_input("Enter PIN", type="password")
         if st.button("Login"):
-            if pin == "1234": # Simple PIN
+            if pin == "1234":
                 st.session_state['role'] = 'shopkeeper'
                 st.rerun()
             else:
                 st.error("Invalid PIN")
     else:
+        # --- UPDATED ADMIN LOGIN ---
+        username = st.text_input("Username", value="admin") # Default to admin
         pwd = st.text_input("Enter Password", type="password")
+        
         if st.button("Login"):
-            if pwd == "admin":
+            # Check DB for user and password
+            cur = conn.cursor()
+            cur.execute("SELECT password FROM users WHERE username=?", (username,))
+            result = cur.fetchone()
+            
+            if result and result[0] == pwd:
                 st.session_state['role'] = 'admin'
+                st.session_state['user'] = username # Remember who logged in
                 st.rerun()
             else:
-                st.error("Invalid Password")
-
+                st.error("Invalid Username or Password")
 # --- SHOPKEEPER VIEW (WIZARD) ---
 def shopkeeper_view():
     st.markdown("### 🏪 Daily Closing Entry")
@@ -212,6 +220,28 @@ def shopkeeper_view():
 def admin_view():
     st.sidebar.title("Admin Menu")
     menu = st.sidebar.radio("Go to", ["Dashboard", "Brand Manager", "Import Excel"])
+
+    if menu == "Settings":
+        st.header("⚙️ Admin Settings")
+        
+        with st.form("change_pass_form"):
+            st.subheader("Change Password")
+            current_user = st.session_state.get('user', 'admin')
+            st.text(f"Changing password for: {current_user}")
+            
+            new_pass = st.text_input("New Password", type="password")
+            confirm_pass = st.text_input("Confirm New Password", type="password")
+            
+            if st.form_submit_button("Update Password"):
+                if new_pass == confirm_pass and len(new_pass) > 0:
+                    try:
+                        conn.execute("UPDATE users SET password=? WHERE username=?", (new_pass, current_user))
+                        conn.commit()
+                        st.success("Password updated successfully! Please re-login.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                else:
+                    st.error("Passwords do not match or are empty.")
     
     if menu == "Dashboard":
         st.header("📋 Approval Dashboard")
@@ -299,7 +329,6 @@ def admin_view():
                     st.success(f"Successfully imported {count} new brands!")
                 except Exception as e:
                     st.error(f"Import failed: {e}")
-
 # --- MAIN APP ROUTING ---
 if 'role' not in st.session_state:
     login_screen()
