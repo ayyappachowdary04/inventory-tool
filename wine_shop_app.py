@@ -4,6 +4,131 @@ import pandas as pd
 import sqlite3
 import datetime
 import os
+import pdfplumber
+
+# --- PDF PARSING HELPER ---
+def parse_pdf_receipt(uploaded_file, db_brands_list):
+    """
+    Extracts inventory data from the specific PDF format provided.
+    Returns a DataFrame with columns: ['brand_id', 'variant', 'qty']
+    """
+    extracted_data = []
+    
+    # 1. Conversion Logic (Cases -> Bottles)
+    # Map Size (ml) -> Bottles per Case
+    case_conversion = {
+        1000: 9, 2000: 9, 
+        750: 12, 650: 12, # Assuming 650ml beers are 12/case
+        375: 24, 
+        180: 48
+    }
+    
+    # Map Size (ml) -> App Variant Code
+    size_to_variant = {
+        2000: "2L", 1000: "1L", 
+        750: "Q", 650: "Q", # Map Beer 650 to Q (closest match for size category)
+        375: "P", 
+        180: "N"
+    }
+
+    with pdfplumber.open(uploaded_file) as pdf:
+        for page in pdf.pages:
+            # Extract table. pdfplumber is good at finding grid lines.
+            tables = page.extract_tables()
+            
+            for table in tables:
+                # We need to find the specific inventory table.
+                # Heuristic: Look for header row containing "Brand Name" and "Size"
+                header_idx = -1
+                for i, row in enumerate(table):
+                    # Clean row to simple text for checking
+                    row_text = [str(x).lower().replace('\n', ' ') for x in row if x]
+                    if any("brand name" in x for x in row_text) and any("size" in x for x in row_text):
+                        header_idx = i
+                        break
+                
+                if header_idx != -1:
+                    # Found the table! Process rows below header.
+                    # Column Mapping (based on standard layout in your PDF):
+                    # Usually: [SlNo, BrandNum, BrandName, Type, Size, QtyCases, ...]
+                    # We need to be dynamic to find the indices
+                    headers = [str(x).lower().replace('\n', ' ') for x in table[header_idx] if x]
+                    
+                    # Find indices (safeguard against shifting columns)
+                    try:
+                        col_brand = next(i for i, h in enumerate(headers) if "brand name" in h)
+                        col_size  = next(i for i, h in enumerate(headers) if "size" in h)
+                        # Qty Cases is usually "Qty (Cases...)"
+                        col_cases = next(i for i, h in enumerate(headers) if "cases" in h)
+                        # Sometimes there is a separate "Bottles" column for loose bottles
+                        col_btls  = next((i for i, h in enumerate(headers) if "bottles" in h and "cases" not in h), None)
+                    except StopIteration:
+                        continue # Header found but columns confusing, skip table
+
+                    # Process Data Rows
+                    for row in table[header_idx+1:]:
+                        if not row or len(row) < 3: continue
+                        
+                        # Extract Raw Data
+                        raw_brand = str(row[col_brand]).strip()
+                        raw_size  = str(row[col_size]).strip()
+                        raw_cases = str(row[col_cases]).strip()
+                        
+                        # Skip total rows or garbage
+                        if "total" in raw_brand.lower(): continue
+                        
+                        # 1. Parse Size
+                        try:
+                            size_ml = int(''.join(filter(str.isdigit, raw_size)))
+                        except:
+                            continue # Skip if no valid size
+
+                        # 2. Parse Qty
+                        # Clean numbers (sometimes "1" comes as "1.00" or with spaces)
+                        try:
+                            cases = float(raw_cases.split('/')[0]) # Handle "1/0" formats if any
+                        except:
+                            cases = 0
+                            
+                        loose_bottles = 0
+                        if col_btls is not None and len(row) > col_btls:
+                             try:
+                                 loose_bottles = float(str(row[col_btls]).split('/')[0])
+                             except:
+                                 loose_bottles = 0
+
+                        # CALCULATION: Total Bottles = (Cases * Factor) + Loose
+                        factor = case_conversion.get(size_ml, 12) # Default to 12 if unknown
+                        total_qty = int((cases * factor) + loose_bottles)
+                        
+                        if total_qty <= 0: continue
+
+                        # 3. Match Brand Name (Fuzzy Match)
+                        # We look for the DB Brand Name INSIDE the PDF string.
+                        # e.g. DB="Vat 69", PDF="VAT 69 BLENDED SCOTCH..." -> Match!
+                        matched_id = None
+                        matched_name = None
+                        
+                        # Sort DB brands by length desc so "Royal Stag Reserve" matches before "Royal Stag"
+                        # (This helps specificity, though strict "in" check usually works)
+                        for db_name, db_id in db_brands_list:
+                            if db_name.lower() in raw_brand.lower():
+                                matched_id = db_id
+                                matched_name = db_name
+                                break
+                        
+                        if matched_id:
+                            variant_code = size_to_variant.get(size_ml)
+                            if variant_code:
+                                extracted_data.append({
+                                    "brand_id": matched_id,
+                                    "brand_name": matched_name,
+                                    "variant": variant_code,
+                                    "qty": total_qty,
+                                    "raw_pdf_brand": raw_brand # For debugging
+                                })
+    
+    return pd.DataFrame(extracted_data)
 
 # --- CONFIGURATION & CONSTANTS ---
 DB_FILE = "wineshop.db"
@@ -412,11 +537,6 @@ def admin_view():
     # --- 2. STOCK INTAKE (RECEIPTS) ---
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
-        st.markdown("""
-        **Purpose:** Log new inventory deliveries (e.g., from a distributor).  
-        **Effect:** Updates the 'Receipts' count.  
-        `Sold = Opening + Receipts - Closing`
-        """)
         
         # Select Date & Initialize
         date_in = st.date_input("Date of Receipt", datetime.date.today())
@@ -429,8 +549,8 @@ def admin_view():
 
         if 'stock_date' in st.session_state and st.session_state['stock_date'] == date_str:
             
-            # --- TABS FOR ENTRY METHOD ---
-            tab_manual, tab_import = st.tabs(["✋ Manual Entry", "📂 Import Excel/CSV"])
+            # --- TABS ---
+            tab_manual, tab_excel, tab_pdf = st.tabs(["✋ Manual Entry", "📂 Import Excel", "📄 Import PDF"])
             
             # === TAB 1: MANUAL ENTRY ===
             with tab_manual:
@@ -464,7 +584,7 @@ def admin_view():
                             st.rerun()
 
             # === TAB 2: IMPORT EXCEL/CSV ===
-            with tab_import:
+            with tab_excel:
                 st.subheader("📂 Bulk Import Receipts")
                 st.markdown("""
                 ### 📋 File Format Requirements
@@ -565,7 +685,59 @@ def admin_view():
                                 
                     except Exception as e:
                         st.error(f"Import Error: {e}")
-
+            with tab_pdf:
+                st.subheader("📄 Import from Official Receipt PDF")
+                st.markdown("""
+                **Instructions:**
+                1. Upload the 'Invoice Cum Delivery Challan' PDF.
+                2. System extracts the inventory table automatically.
+                3. **Cases are converted to bottles** (e.g., 1 Case 180ml = 48 bottles).
+                4. Brand names like 'Vat 69 Blended...' are matched to 'Vat 69'.
+                """)
+                
+                uploaded_pdf = st.file_uploader("Upload Receipt PDF", type=["pdf"], key="pdf_upload")
+                
+                if uploaded_pdf:
+                    if st.button("🔍 Process PDF"):
+                        try:
+                            # 1. Get DB Brands for matching
+                            db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
+                            # List of tuples: [('Royal Stag', 1), ('Vat 69', 2)...]
+                            # Sort by length desc to match longest names first
+                            db_brands_list = sorted(
+                                list(zip(db_brands['name'], db_brands['id'])), 
+                                key=lambda x: len(x[0]), 
+                                reverse=True
+                            )
+                            
+                            # 2. Extract Data
+                            df_extracted = parse_pdf_receipt(uploaded_pdf, db_brands_list)
+                            
+                            if df_extracted.empty:
+                                st.error("❌ No valid inventory data found. Check PDF format.")
+                            else:
+                                st.success(f"✅ Extracted {len(df_extracted)} items!")
+                                
+                                # 3. Show Preview
+                                st.subheader("Preview Data to Import")
+                                st.dataframe(df_extracted[['brand_name', 'variant', 'qty', 'raw_pdf_brand']])
+                                
+                                # 4. Commit Button
+                                if st.button("🚀 Add to Inventory"):
+                                    count = 0
+                                    for _, row in df_extracted.iterrows():
+                                        conn.execute("""
+                                            UPDATE inventory 
+                                            SET receipts = receipts + ? 
+                                            WHERE date = ? AND brand_id = ? AND variant = ?
+                                        """, (row['qty'], date_str, row['brand_id'], row['variant']))
+                                        count += 1
+                                    conn.commit()
+                                    st.success(f"🎉 Successfully added {count} items to stock receipts!")
+                                    st.balloons()
+                                    
+                        except Exception as e:
+                            st.error(f"PDF Processing Error: {e}")
             # --- SHOW SUMMARY BELOW TABS ---
             st.divider()
             st.markdown("### 📊 Today's Total Receipts")
