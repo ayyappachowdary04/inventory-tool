@@ -1,0 +1,314 @@
+import streamlit as st
+import pandas as pd
+import sqlite3
+import datetime
+
+# --- CONFIGURATION & CONSTANTS ---
+DB_FILE = "wineshop.db"
+VARIANTS = ["2L", "1L", "Q", "P", "N"] # Q=750ml, P=375ml, N=180ml
+# Initial 64 Brands from your list (Truncated for brevity, but structure is ready)
+INITIAL_BRANDS = [
+    "100 Pipers", "Teachers", "Black Dog", "Vat 69", "Antiquity", "Signature", 
+    "Royal Challenge", "Blenders Pride", "Royal Stag", "McDowell's (MCW)", 
+    "Imperial Blue (IB)", "8PM", "Royal Green", "Bagpiper", "Officer's Choice (OCW)",
+    "Old Monk", "Magic Moments", "Smirnoff", "Kingfisher Strong", "Kingfisher Lager", 
+    "Budweiser", "Thums Up", "Coca Cola", "Water 1L"
+]
+
+# --- DATABASE MANAGEMENT ---
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    
+    # Brands Table
+    c.execute('''CREATE TABLE IF NOT EXISTS brands 
+                 (id INTEGER PRIMARY KEY, name TEXT UNIQUE, is_alcohol BOOLEAN)''')
+    
+    # Prices Table (Brand ID, Variant, Price)
+    c.execute('''CREATE TABLE IF NOT EXISTS prices 
+                 (brand_id INTEGER, variant TEXT, price REAL, 
+                  UNIQUE(brand_id, variant))''')
+    
+    # Inventory Table
+    # Status: 0=Draft, 1=Pending, 2=Approved/Locked
+    c.execute('''CREATE TABLE IF NOT EXISTS inventory 
+                 (date TEXT, brand_id INTEGER, variant TEXT, 
+                  opening INTEGER, receipts INTEGER, closing INTEGER, 
+                  status INTEGER, UNIQUE(date, brand_id, variant))''')
+    
+    # Seed Data if empty
+    c.execute("SELECT count(*) FROM brands")
+    if c.fetchone()[0] == 0:
+        for b in INITIAL_BRANDS:
+            c.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (b, True))
+            bid = c.lastrowid
+            # Default dummy prices
+            for v in VARIANTS:
+                c.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 500.0))
+    
+    conn.commit()
+    return conn
+
+conn = init_db()
+
+# --- HELPER FUNCTIONS ---
+def get_brands():
+    return pd.read_sql("SELECT * FROM brands ORDER BY name", conn)
+
+def get_inventory(date_str):
+    query = """
+    SELECT b.name, i.*, p.price 
+    FROM inventory i 
+    JOIN brands b ON i.brand_id = b.id 
+    LEFT JOIN prices p ON (i.brand_id = p.brand_id AND i.variant = p.variant)
+    WHERE date = ?
+    """
+    return pd.read_sql(query, conn, params=(date_str,))
+
+def initialize_day(date_str):
+    """Creates draft entries for a new day based on yesterday's closing."""
+    existing = pd.read_sql("SELECT count(*) as cnt FROM inventory WHERE date=?", conn, params=(date_str,))
+    if existing.iloc[0]['cnt'] > 0:
+        return # Already initialized
+
+    prev_date = (datetime.datetime.strptime(date_str, "%Y-%m-%d") - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    # Get yesterday's closing or default to 0
+    brands = get_brands()
+    for _, brand in brands.iterrows():
+        for v in VARIANTS:
+            # Fetch previous closing
+            cur = conn.cursor()
+            cur.execute("SELECT closing FROM inventory WHERE date=? AND brand_id=? AND variant=?", 
+                        (prev_date, brand['id'], v))
+            res = cur.fetchone()
+            opening = res[0] if res else 0
+            
+            # Insert new draft row
+            conn.execute("""INSERT OR IGNORE INTO inventory 
+                            (date, brand_id, variant, opening, receipts, closing, status) 
+                            VALUES (?, ?, ?, ?, 0, 0, 0)""", 
+                            (date_str, brand['id'], v, opening))
+    conn.commit()
+
+# --- AUTHENTICATION ---
+def login_screen():
+    st.title("🍷 Wine Shop Manager")
+    role = st.selectbox("Select Role", ["Shopkeeper", "Admin"])
+    
+    if role == "Shopkeeper":
+        pin = st.text_input("Enter PIN", type="password")
+        if st.button("Login"):
+            if pin == "1234": # Simple PIN
+                st.session_state['role'] = 'shopkeeper'
+                st.rerun()
+            else:
+                st.error("Invalid PIN")
+    else:
+        pwd = st.text_input("Enter Password", type="password")
+        if st.button("Login"):
+            if pwd == "admin":
+                st.session_state['role'] = 'admin'
+                st.rerun()
+            else:
+                st.error("Invalid Password")
+
+# --- SHOPKEEPER VIEW (WIZARD) ---
+def shopkeeper_view():
+    st.markdown("### 🏪 Daily Closing Entry")
+    
+    # 1. Date Picker
+    date = st.date_input("Select Date", datetime.date.today())
+    date_str = date.strftime("%Y-%m-%d")
+    
+    if st.button("Load Data"):
+        initialize_day(date_str)
+        st.session_state['current_date'] = date_str
+        st.session_state['wiz_idx'] = 0 # Reset wizard index
+        st.rerun()
+
+    if 'current_date' in st.session_state and st.session_state['current_date'] == date_str:
+        df = get_inventory(date_str)
+        
+        # Check Status
+        if not df.empty and df.iloc[0]['status'] == 2:
+            st.warning(f"🔒 Data for {date_str} is LOCKED/APPROVED.")
+            st.dataframe(df[['name', 'variant', 'opening', 'receipts', 'closing']])
+            return
+
+        brands = df['name'].unique()
+        
+        # Wizard Logic
+        if 'wiz_idx' not in st.session_state:
+            st.session_state['wiz_idx'] = 0
+            
+        idx = st.session_state['wiz_idx']
+        
+        if idx < len(brands):
+            current_brand = brands[idx]
+            brand_rows = df[df['name'] == current_brand]
+            
+            st.info(f"Brand {idx + 1}/{len(brands)}")
+            st.markdown(f"## 🍾 {current_brand}")
+            
+            with st.form(key=f"form_{idx}"):
+                # Iterate variants for this brand
+                updates = {}
+                for _, row in brand_rows.iterrows():
+                    v = row['variant']
+                    st.markdown(f"**Variant: {v}**")
+                    c1, c2, c3 = st.columns(3)
+                    c1.text(f"Open: {row['opening']}")
+                    c2.text(f"Recvd: {row['receipts']}")
+                    
+                    max_val = row['opening'] + row['receipts']
+                    
+                    # Shopkeeper Input
+                    closing = c3.number_input(f"Closing ({v})", min_value=0, value=row['closing'], key=f"{current_brand}_{v}")
+                    
+                    # Validation Display
+                    sold = max_val - closing
+                    rev = sold * row['price']
+                    if closing > max_val:
+                        st.error(f"❌ Error: Closing cannot exceed {max_val}")
+                    else:
+                        st.caption(f"✅ Sold: {sold} | Revenue: ₹{rev:,.2f}")
+                    
+                    updates[(row['brand_id'], v)] = closing
+
+                # Navigation
+                col_back, col_next = st.columns([1, 1])
+                with col_next:
+                    if st.form_submit_button("Next Brand ➡️"):
+                        # Save current inputs to DB
+                        for (bid, var), cl_val in updates.items():
+                            conn.execute("UPDATE inventory SET closing=? WHERE date=? AND brand_id=? AND variant=?",
+                                         (cl_val, date_str, bid, var))
+                        conn.commit()
+                        st.session_state['wiz_idx'] += 1
+                        st.rerun()
+        else:
+            # Summary Screen
+            st.success("🎉 Entry Complete!")
+            st.subheader("Preview Summary")
+            
+            # Recalculate totals
+            df_final = get_inventory(date_str)
+            df_final['sold'] = (df_final['opening'] + df_final['receipts']) - df_final['closing']
+            df_final['revenue'] = df_final['sold'] * df_final['price']
+            
+            total_rev = df_final['revenue'].sum()
+            st.metric("Total Revenue Estimate", f"₹{total_rev:,.2f}")
+            
+            st.dataframe(df_final[['name', 'variant', 'sold', 'revenue']])
+            
+            if st.button("Submit for Approval 📤"):
+                conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date_str,))
+                conn.commit()
+                st.success("Submitted to Admin successfully!")
+                st.session_state['wiz_idx'] = 0 # Reset
+
+# --- ADMIN VIEW ---
+def admin_view():
+    st.sidebar.title("Admin Menu")
+    menu = st.sidebar.radio("Go to", ["Dashboard", "Brand Manager", "Import Excel"])
+    
+    if menu == "Dashboard":
+        st.header("📋 Approval Dashboard")
+        # Find pending dates
+        pending = pd.read_sql("SELECT DISTINCT date FROM inventory WHERE status=1", conn)
+        
+        if pending.empty:
+            st.info("No pending approvals.")
+        else:
+            for d in pending['date']:
+                with st.expander(f"Pending: {d}"):
+                    data = get_inventory(d)
+                    data['sold'] = (data['opening'] + data['receipts']) - data['closing']
+                    data['revenue'] = data['sold'] * data['price']
+                    
+                    st.dataframe(data)
+                    st.write(f"**Total Revenue:** ₹{data['revenue'].sum():,.2f}")
+                    
+                    c1, c2 = st.columns(2)
+                    if c1.button("✅ Approve & Lock", key=f"app_{d}"):
+                        conn.execute("UPDATE inventory SET status=2 WHERE date=?", (d,))
+                        conn.commit()
+                        st.success(f"Approved {d}")
+                        st.rerun()
+                    if c2.button("🔓 Unlock/Reject", key=f"rej_{d}"):
+                        conn.execute("UPDATE inventory SET status=0 WHERE date=?", (d,))
+                        conn.commit()
+                        st.warning(f"Returned {d} to Shopkeeper")
+                        st.rerun()
+
+    elif menu == "Brand Manager":
+        st.header("🏷️ Manage Brands")
+        new_brand = st.text_input("New Brand Name")
+        if st.button("Add Brand"):
+            try:
+                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (new_brand, True))
+                bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
+                for v in VARIANTS:
+                    conn.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 0.0))
+                conn.commit()
+                st.success(f"Added {new_brand}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+                
+        st.divider()
+        st.subheader("Edit Prices")
+        brands = get_brands()
+        b_sel = st.selectbox("Select Brand", brands['name'])
+        if b_sel:
+            bid = brands[brands['name'] == b_sel].iloc[0]['id']
+            prices = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
+            
+            with st.form("price_edit"):
+                for _, row in prices.iterrows():
+                    new_p = st.number_input(f"Price for {row['variant']}", value=row['price'])
+                    conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (new_p, bid, row['variant']))
+                
+                if st.form_submit_button("Update Prices"):
+                    conn.commit()
+                    st.success("Prices updated.")
+
+    elif menu == "Import Excel":
+        st.header("📥 Import Brands from Excel")
+        st.markdown("Upload `.xlsx` file. Ensure brand names are in **Column A**, starting **Row 3**.")
+        uploaded_file = st.file_uploader("Choose file", type="xlsx")
+        
+        if uploaded_file:
+            if st.button("Process Import"):
+                try:
+                    df = pd.read_excel(uploaded_file, header=None, skiprows=2)
+                    brands_imported = df[0].unique() # Column A is index 0
+                    
+                    count = 0
+                    for b in brands_imported:
+                        if pd.notna(b):
+                            try:
+                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (str(b).strip(), True))
+                                bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
+                                for v in VARIANTS:
+                                    conn.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 0.0))
+                                count += 1
+                            except sqlite3.IntegrityError:
+                                pass # Skip duplicates
+                    conn.commit()
+                    st.success(f"Successfully imported {count} new brands!")
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
+
+# --- MAIN APP ROUTING ---
+if 'role' not in st.session_state:
+    login_screen()
+else:
+    if st.sidebar.button("Logout"):
+        del st.session_state['role']
+        st.rerun()
+        
+    if st.session_state['role'] == 'shopkeeper':
+        shopkeeper_view()
+    elif st.session_state['role'] == 'admin':
+        admin_view()
