@@ -25,30 +25,30 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 1. Create Brands
+    # 1. Existing Tables
     c.execute('''CREATE TABLE IF NOT EXISTS brands 
                  (id INTEGER PRIMARY KEY, name TEXT UNIQUE, is_alcohol BOOLEAN)''')
-    
-    # 2. Create Prices
     c.execute('''CREATE TABLE IF NOT EXISTS prices 
                  (brand_id INTEGER, variant TEXT, price REAL, UNIQUE(brand_id, variant))''')
-    
-    # 3. Create Inventory
     c.execute('''CREATE TABLE IF NOT EXISTS inventory 
                  (date TEXT, brand_id INTEGER, variant TEXT, 
                   opening INTEGER, receipts INTEGER, closing INTEGER, 
                   status INTEGER, UNIQUE(date, brand_id, variant))''')
-    
-    # 4. CREATE USERS TABLE (This is likely the missing part!)
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (username TEXT PRIMARY KEY, password TEXT)''')
     
-    # 5. Create Default Admin
+    # 2. Create Default Admin (if missing)
     c.execute("SELECT count(*) FROM users WHERE username='admin'")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("admin", "admin"))
+    
+    # --- NEW: Create Default Shopkeeper (if missing) ---
+    c.execute("SELECT count(*) FROM users WHERE username='shopkeeper'")
+    if c.fetchone()[0] == 0:
+        # Default PIN is 1234
+        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("shopkeeper", "1234"))
 
-    # Seed Brands
+    # 3. Seed Brands (Same as before)
     c.execute("SELECT count(*) FROM brands")
     if c.fetchone()[0] == 0:
         for b in INITIAL_BRANDS:
@@ -110,7 +110,13 @@ def login_screen():
     if role == "Shopkeeper":
         pin = st.text_input("Enter PIN", type="password")
         if st.button("Login"):
-            if pin == "1234":
+            # --- NEW: Check Database for Shopkeeper PIN ---
+            cur = conn.cursor()
+            cur.execute("SELECT password FROM users WHERE username='shopkeeper'")
+            result = cur.fetchone()
+            
+            # result[0] is the PIN stored in DB
+            if result and result[0] == pin:
                 st.session_state['role'] = 'shopkeeper'
                 st.rerun()
             else:
@@ -235,24 +241,33 @@ def admin_view():
     if menu == "Settings":
         st.header("⚙️ Admin Settings")
         
-        with st.form("change_pass_form"):
-            st.subheader("Change Password")
-            current_user = st.session_state.get('user', 'admin')
-            st.text(f"Changing password for: {current_user}")
+        # 1. Change Admin Password (from previous step)
+        with st.expander("👤 Change Admin Password", expanded=False):
+            with st.form("change_pass_form"):
+                current_user = st.session_state.get('user', 'admin')
+                new_pass = st.text_input("New Admin Password", type="password")
+                if st.form_submit_button("Update My Password"):
+                    conn.execute("UPDATE users SET password=? WHERE username=?", (new_pass, current_user))
+                    conn.commit()
+                    st.success("Admin password updated.")
+
+        # --- NEW: Change Shopkeeper PIN ---
+        st.divider()
+        st.subheader("🏪 Shopkeeper Access")
+        with st.form("change_pin_form"):
+            st.write("Update the PIN used by shopkeepers on the main login screen.")
+            new_pin = st.text_input("New Shopkeeper PIN", max_chars=6)
             
-            new_pass = st.text_input("New Password", type="password")
-            confirm_pass = st.text_input("Confirm New Password", type="password")
-            
-            if st.form_submit_button("Update Password"):
-                if new_pass == confirm_pass and len(new_pass) > 0:
+            if st.form_submit_button("Update PIN"):
+                if len(new_pin) > 0:
                     try:
-                        conn.execute("UPDATE users SET password=? WHERE username=?", (new_pass, current_user))
+                        conn.execute("UPDATE users SET password=? WHERE username='shopkeeper'", (new_pin,))
                         conn.commit()
-                        st.success("Password updated successfully! Please re-login.")
+                        st.success(f"Shopkeeper PIN changed to: {new_pin}")
                     except Exception as e:
                         st.error(f"Error: {e}")
                 else:
-                    st.error("Passwords do not match or are empty.")
+                    st.error("PIN cannot be empty.")
     
     if menu == "Dashboard":
         st.header("📋 Approval Dashboard")
