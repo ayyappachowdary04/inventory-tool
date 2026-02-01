@@ -1,24 +1,3 @@
-import subprocess
-import sys
-
-# --- 1. DEPENDENCY CHECK & AUTO-INSTALL ---
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-required_packages = {
-    'pandas': 'pandas',
-    'streamlit': 'streamlit',
-    'openpyxl': 'openpyxl',  # For .xlsx files
-    'xlrd': 'xlrd>=2.0.1'    # For .xls files
-}
-
-for lib, pip_name in required_packages.items():
-    try:
-        __import__(lib)
-    except ImportError:
-        print(f"Installing missing package: {pip_name}...")
-        install(pip_name)
-
 # --- STANDARD IMPORTS ---
 import streamlit as st
 import pandas as pd
