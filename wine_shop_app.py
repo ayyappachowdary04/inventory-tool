@@ -628,28 +628,51 @@ def admin_view():
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
         
-        # Select Date & Initialize
+        # Select Date
         date_in = st.date_input("Date of Receipt", datetime.date.today())
         date_str = date_in.strftime("%Y-%m-%d")
         
-        if st.button("Load Inventory for Date"):
+        # Initialize Day Button
+        if st.button("Load / Refresh Inventory for Date"):
             initialize_day(date_str)
             st.session_state['stock_date'] = date_str
+            st.success(f"Inventory initialized for {date_str}")
             st.rerun()
+
+        # HELPER FUNCTION: Safe Save (Update if exists, Insert if new)
+        def safe_save_receipt(date_val, bid, var, qty):
+            # 1. Try UPDATE
+            cur = conn.execute("""
+                UPDATE inventory 
+                SET receipts = receipts + ? 
+                WHERE date = ? AND brand_id = ? AND variant = ?
+            """, (qty, date_val, bid, var))
+            
+            # 2. If UPDATE failed (row didn't exist), force INSERT
+            if cur.rowcount == 0:
+                conn.execute("""
+                    INSERT INTO inventory (date, brand_id, variant, opening, receipts, closing, status)
+                    VALUES (?, ?, ?, 0, ?, 0, 0)
+                """, (date_val, bid, var, qty))
+                return 1 # Created new
+            return 1 # Updated existing
 
         if 'stock_date' in st.session_state and st.session_state['stock_date'] == date_str:
             
             # --- TABS ---
             tab_manual, tab_excel, tab_pdf = st.tabs(["✋ Manual Entry", "📂 Import Excel", "📄 Import PDF"])
             
-            # === TAB 1: MANUAL ENTRY ===
+            # ========================================================
+            # TAB 1: MANUAL ENTRY (Updated with Safe Save)
+            # ========================================================
             with tab_manual:
-                st.info(f"Manually enter quantities for a single brand for {date_str}.")
+                st.info(f"Adding stock manually for: {date_str}")
                 brands_df = get_brands()
                 brand_sel = st.selectbox("Select Brand Received", brands_df['name'])
                 
                 if brand_sel:
                     bid = brands_df[brands_df['name'] == brand_sel].iloc[0]['id']
+                    # Get current receipts just for display
                     cur_rows = pd.read_sql("SELECT variant, receipts FROM inventory WHERE date=? AND brand_id=?", 
                                            conn, params=(date_str, bid))
                     
@@ -663,188 +686,127 @@ def admin_view():
                             current_qty = 0 if row.empty else row.iloc[0]['receipts']
                             with cols[i]:
                                 new_qty = st.number_input(f"{v_name}", min_value=0, value=current_qty, key=f"rec_{bid}_{v_name}")
+                                # We only want to ADD the difference, or just Overwrite? 
+                                # Standard logic: The user types the TOTAL receipts for the day.
+                                # So we calculate the difference or just set it. 
+                                # Simpler for Manual: SET exact value.
                                 input_vals[v_name] = new_qty
                         
-                        if st.form_submit_button("➕ Update Receipts"):
+                        if st.form_submit_button("💾 Save Receipts"):
+                            # For manual, we want to SET the value, not add to it.
+                            # So we use a slightly different query than the helper, or just use helper with diff?
+                            # Let's use direct SQL for "SET" logic to match user expectation (Total = Input).
                             for v, qty in input_vals.items():
-                                conn.execute("UPDATE inventory SET receipts=? WHERE date=? AND brand_id=? AND variant=?",
+                                cur = conn.execute("UPDATE inventory SET receipts=? WHERE date=? AND brand_id=? AND variant=?",
                                              (qty, date_str, bid, v))
+                                if cur.rowcount == 0:
+                                    # Fallback if row missing
+                                    conn.execute("""
+                                        INSERT INTO inventory (date, brand_id, variant, opening, receipts, closing, status)
+                                        VALUES (?, ?, ?, 0, ?, 0, 0)
+                                    """, (date_str, bid, v, qty))
                             conn.commit()
                             st.success(f"Updated stock receipts for {brand_sel}!")
                             st.rerun()
 
-            # === TAB 2: IMPORT EXCEL/CSV ===
+            # ========================================================
+            # TAB 2: EXCEL IMPORT (Updated with Safe Save)
+            # ========================================================
             with tab_excel:
                 st.subheader("📂 Bulk Import Receipts")
-                st.markdown("""
-                ### 📋 File Format Requirements
-                * **File Types:** `.xlsx`, `.xls`, `.csv`
-                * **Sheets:** Supports multiple sheets. You will select one sheet to import.
-                * **Columns:** Must contain headers indicating sizes (e.g., `750ml`, `Q`, `1L`, `Full`, `Half`).
-                * **Rows:** Must contain a column for Brand Name.
-                
-                **Example Layout:**
-                | Brand Name | 750ml | 375ml | 180ml |
-                | :--- | :--- | :--- | :--- |
-                | Royal Stag | 12 | 24 | 48 |
-                """)
-                
-                uploaded_file = st.file_uploader("Upload Receipt File", type=["xlsx", "xls", "csv"], key="receipt_upload")
+                uploaded_file = st.file_uploader("Upload Excel/CSV", type=["xlsx", "xls", "csv"], key="rec_excel")
                 
                 if uploaded_file:
-                    try:
-                        # 1. Parse File & Sheets
-                        file_ext = uploaded_file.name.split('.')[-1].lower()
-                        data_dict = {}
-                        
-                        if file_ext == 'csv':
-                            data_dict['Default'] = pd.read_csv(uploaded_file)
-                        else:
-                            data_dict = pd.read_excel(uploaded_file, sheet_name=None)
-                        
-                        sheet_options = list(data_dict.keys())
-                        
-                        # Auto-guess sheet based on selected date
-                        default_idx = 0
-                        for i, s_name in enumerate(sheet_options):
-                            if date_in.strftime("%d") in s_name or date_in.strftime("%b") in s_name:
-                                default_idx = i
-                                
-                        selected_sheet = st.selectbox("Select Sheet to Import", sheet_options, index=default_idx)
-                        
-                        if st.button("🚀 Process Import"):
-                            df_imp = data_dict[selected_sheet]
-                            # Clean headers
+                    if st.button("🚀 Process Import"):
+                        try:
+                            # Parse File
+                            file_ext = uploaded_file.name.split('.')[-1].lower()
+                            if file_ext == 'csv': df_imp = pd.read_csv(uploaded_file)
+                            else: df_imp = pd.read_excel(uploaded_file) # Reads first sheet by default
+                            
                             df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                             
-                            # 2. Map Columns (Reusable Logic)
+                            # Map Columns
                             variant_map = {
-                                "2l": "2L", "2000ml": "2L",
-                                "1l": "1L", "1000ml": "1L", "full": "1L",
-                                "q": "Q", "750ml": "Q", "qt": "Q", "quart": "Q",
-                                "p": "P", "375ml": "P", "pint": "P", "half": "P",
-                                "n": "N", "180ml": "N", "nip": "N", "quarter": "N"
+                                "2l": "2L", "1l": "1L", "q": "Q", "750ml": "Q", 
+                                "p": "P", "375ml": "P", "n": "N", "180ml": "N"
                             }
-                            
-                            found_maps = {}
-                            for col in df_imp.columns:
-                                for key, sys_var in variant_map.items():
-                                    if key in col:
-                                        found_maps[col] = sys_var
-                                        break
+                            found_maps = {c: variant_map[k] for c in df_imp.columns for k in variant_map if k in c}
                             
                             if not found_maps:
-                                st.error("❌ No size columns found. Check headers (need '750ml', 'Q', etc).")
+                                st.error("❌ No size columns found.")
                             else:
-                                # 3. Map Brands & Update DB
+                                # Map Brands
                                 db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
                                 brand_map = {name.lower().strip(): bid for bid, name in zip(db_brands['id'], db_brands['name'])}
                                 
-                                # Identify Brand Column
+                                # Find Brand Column
                                 brand_col = df_imp.columns[0]
                                 for c in df_imp.columns:
-                                    if 'brand' in c or 'name' in c or 'item' in c:
-                                        brand_col = c
-                                        break
+                                    if 'brand' in c or 'name' in c: brand_col = c; break
                                 
-                                match_count = 0
+                                count = 0
                                 for _, row in df_imp.iterrows():
                                     file_brand = str(row[brand_col]).strip()
                                     bid = brand_map.get(file_brand.lower())
-                                    
                                     if bid:
-                                        for col_name, sys_var in found_maps.items():
-                                            # Get Receipt Value
-                                            try:
-                                                val = row[col_name]
-                                                receipt_qty = int(float(val))
-                                            except:
-                                                receipt_qty = 0
-                                            
-                                            if receipt_qty > 0:
-                                                conn.execute("""
-                                                    UPDATE inventory 
-                                                    SET receipts = ? 
-                                                    WHERE date = ? AND brand_id = ? AND variant = ?
-                                                """, (receipt_qty, date_str, bid, sys_var))
-                                        match_count += 1
-                                
+                                        for col, var in found_maps.items():
+                                            try: qty = int(float(row[col]))
+                                            except: qty = 0
+                                            if qty > 0:
+                                                # USE SAFE SAVE (Add to existing)
+                                                safe_save_receipt(date_str, bid, var, qty)
+                                        count += 1
                                 conn.commit()
-                                st.success(f"✅ Imported receipts for {match_count} brands successfully!")
+                                st.success(f"✅ Successfully imported {count} brands!")
                                 st.balloons()
-                                
-                    except Exception as e:
-                        st.error(f"Import Error: {e}")
-            # === TAB 3: IMPORT PDF (FIXED) ===
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+            # ========================================================
+            # TAB 3: PDF IMPORT (Keep Fixed Version)
+            # ========================================================
             with tab_pdf:
-                st.subheader("📄 Import from Official Receipt PDF")
-                st.markdown("""
-                **Instructions:**
-                1. Upload the 'Invoice Cum Delivery Challan' PDF.
-                2. System extracts the inventory table automatically.
-                3. **Cases are converted to bottles** (e.g., 1 Case 180ml = 48 bottles).
-                """)
-                
+                st.subheader("📄 Import from PDF")
                 uploaded_pdf = st.file_uploader("Upload Receipt PDF", type=["pdf"], key="pdf_upload")
                 
+                if 'pdf_data' not in st.session_state: st.session_state['pdf_data'] = None
+
                 if uploaded_pdf:
                     if st.button("🔍 Process PDF"):
                         try:
-                            # 1. Get DB Brands
                             db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
-                            db_brands_list = sorted(
-                                list(zip(db_brands['name'], db_brands['id'])), 
-                                key=lambda x: len(x[0]), 
-                                reverse=True
-                            )
+                            db_brands_list = sorted(list(zip(db_brands['name'], db_brands['id'])), key=lambda x: len(x[0]), reverse=True)
                             
-                            # 2. Extract Data
                             df_extracted = parse_pdf_receipt(uploaded_pdf, db_brands_list)
                             
                             if df_extracted.empty:
-                                st.error("❌ No valid inventory data found. Check PDF format or Brand Names.")
+                                st.error("❌ No data found.")
+                                st.session_state['pdf_data'] = None
                             else:
-                                st.success(f"✅ Extracted {len(df_extracted)} items from PDF!")
-                                st.dataframe(df_extracted[['brand_name', 'variant', 'qty', 'raw_pdf_brand']])
-                                
-                                # 3. Commit to Database
-                                if st.button("🚀 Add to Inventory", key="confirm_pdf"):
-                                    # A. FORCE INITIALIZE THE DAY (Critical Fix)
-                                    initialize_day(date_str)
-                                    
-                                    # B. UPDATE ROWS
-                                    update_count = 0
-                                    rows_failed = 0
-                                    
-                                    for _, row in df_extracted.iterrows():
-                                        # Execute Update
-                                        cur = conn.execute("""
-                                            UPDATE inventory 
-                                            SET receipts = receipts + ? 
-                                            WHERE date = ? AND brand_id = ? AND variant = ?
-                                        """, (row['qty'], date_str, row['brand_id'], row['variant']))
-                                        
-                                        if cur.rowcount > 0:
-                                            update_count += 1
-                                        else:
-                                            rows_failed += 1
-                                            
-                                    conn.commit()
-                                    
-                                    # C. REPORT RESULTS
-                                    if update_count > 0:
-                                        st.balloons()
-                                        st.success(f"🎉 Successfully updated stock for {update_count} brands!")
-                                        if rows_failed > 0:
-                                            st.warning(f"⚠️ {rows_failed} items matched in PDF but failed to update DB (Variant mismatch?).")
-                                    else:
-                                        st.error("❌ Database update failed! No rows were modified. Please check if the brands/variants exist in the system.")
-                                        
-                                    st.rerun()
-                                    
+                                st.success(f"✅ Found {len(df_extracted)} items.")
+                                st.session_state['pdf_data'] = df_extracted
                         except Exception as e:
-                            st.error(f"PDF Processing Error: {e}")
-            # --- SHOW SUMMARY BELOW TABS ---
+                            st.error(f"Error: {e}")
+
+                if st.session_state['pdf_data'] is not None:
+                    st.dataframe(st.session_state['pdf_data'][['brand_name', 'variant', 'qty']])
+                    
+                    if st.button("🚀 Save to Database", type="primary"):
+                        update_count = 0
+                        df_save = st.session_state['pdf_data']
+                        for _, row in df_save.iterrows():
+                            # USE SAFE SAVE
+                            safe_save_receipt(date_str, row['brand_id'], row['variant'], row['qty'])
+                            update_count += 1
+                        
+                        conn.commit()
+                        st.session_state['pdf_data'] = None
+                        st.balloons()
+                        st.success(f"Saved {update_count} items!")
+                        st.rerun()
+
+            # --- SUMMARY ---
             st.divider()
             st.markdown("### 📊 Today's Total Receipts")
             daily_rec = pd.read_sql("""
@@ -853,6 +815,7 @@ def admin_view():
                 WHERE i.date=? AND i.receipts > 0
                 ORDER BY b.name
             """, conn, params=(date_str,))
+            st.dataframe(daily_rec)
             
             if not daily_rec.empty:
                 st.dataframe(daily_rec, use_container_width=True)
