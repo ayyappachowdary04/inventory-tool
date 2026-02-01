@@ -815,7 +815,6 @@ def admin_view():
                 WHERE i.date=? AND i.receipts > 0
                 ORDER BY b.name
             """, conn, params=(date_str,))
-            st.dataframe(daily_rec)
             
             if not daily_rec.empty:
                 st.dataframe(daily_rec, use_container_width=True)
