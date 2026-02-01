@@ -271,6 +271,37 @@ def admin_view():
     
     if menu == "Dashboard":
         st.header("📋 Approval Dashboard")
+        
+        # --- NEW: Export Current Inventory ---
+        st.subheader("Export Data")
+        
+        # 1. Select Date to Export
+        export_date = st.date_input("Select Date for Report", datetime.date.today())
+        date_str = export_date.strftime("%Y-%m-%d")
+        
+        # 2. Fetch Data
+        df_export = get_inventory(date_str)
+        
+        if not df_export.empty:
+            # Calculate Sold/Revenue for the report
+            df_export['sold'] = (df_export['opening'] + df_export['receipts']) - df_export['closing']
+            df_export['revenue'] = df_export['sold'] * df_export['price']
+            
+            # Select clean columns for the CSV
+            csv_data = df_export[['name', 'variant', 'opening', 'receipts', 'closing', 'sold', 'revenue', 'status']].to_csv(index=False).encode('utf-8')
+            
+            # 3. Download Button
+            st.download_button(
+                label="📥 Download Inventory as CSV",
+                data=csv_data,
+                file_name=f"inventory_report_{date_str}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info(f"No data found for {date_str}")
+            
+        st.divider()
+        # ... (Existing Pending Approvals Logic follows here) ...
         # Find pending dates
         pending = pd.read_sql("SELECT DISTINCT date FROM inventory WHERE status=1", conn)
         
