@@ -341,75 +341,30 @@ def shopkeeper_view():
 # --- ADMIN VIEW ---
 def admin_view():
     st.sidebar.title("Admin Menu")
-    menu = st.sidebar.radio("Go to", ["Dashboard", "Brand Manager", "Import Excel", "Settings"])
-
-    if menu == "Settings":
-        st.header("⚙️ Admin Settings")
-        
-        # 1. Change Admin Password (from previous step)
-        with st.expander("👤 Change Admin Password", expanded=False):
-            with st.form("change_pass_form"):
-                current_user = st.session_state.get('user', 'admin')
-                new_pass = st.text_input("New Admin Password", type="password")
-                if st.form_submit_button("Update My Password"):
-                    conn.execute("UPDATE users SET password=? WHERE username=?", (new_pass, current_user))
-                    conn.commit()
-                    st.success("Admin password updated.")
-
-        # --- NEW: Change Shopkeeper PIN ---
-        st.divider()
-        st.subheader("🏪 Shopkeeper Access")
-        with st.form("change_pin_form"):
-            st.write("Update the PIN used by shopkeepers on the main login screen.")
-            new_pin = st.text_input("New Shopkeeper PIN", max_chars=6)
-            
-            if st.form_submit_button("Update PIN"):
-                if len(new_pin) > 0:
-                    try:
-                        conn.execute("UPDATE users SET password=? WHERE username='shopkeeper'", (new_pin,))
-                        conn.commit()
-                        st.success(f"Shopkeeper PIN changed to: {new_pin}")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                else:
-                    st.error("PIN cannot be empty.")
+    menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
     
+    # --- 1. DASHBOARD ---
     if menu == "Dashboard":
         st.header("📋 Approval Dashboard")
         
-        # --- NEW: Export Current Inventory ---
+        # Export Data Button
         st.subheader("Export Data")
-        
-        # 1. Select Date to Export
         export_date = st.date_input("Select Date for Report", datetime.date.today())
         date_str = export_date.strftime("%Y-%m-%d")
         
-        # 2. Fetch Data
         df_export = get_inventory(date_str)
-        
         if not df_export.empty:
-            # Calculate Sold/Revenue for the report
             df_export['sold'] = (df_export['opening'] + df_export['receipts']) - df_export['closing']
             df_export['revenue'] = df_export['sold'] * df_export['price']
-            
-            # Select clean columns for the CSV
             csv_data = df_export[['name', 'variant', 'opening', 'receipts', 'closing', 'sold', 'revenue', 'status']].to_csv(index=False).encode('utf-8')
-            
-            # 3. Download Button
-            st.download_button(
-                label="📥 Download Inventory as CSV",
-                data=csv_data,
-                file_name=f"inventory_report_{date_str}.csv",
-                mime="text/csv"
-            )
+            st.download_button(label="📥 Download CSV Report", data=csv_data, file_name=f"inventory_{date_str}.csv", mime="text/csv")
         else:
             st.info(f"No data found for {date_str}")
             
         st.divider()
-        # ... (Existing Pending Approvals Logic follows here) ...
-        # Find pending dates
-        pending = pd.read_sql("SELECT DISTINCT date FROM inventory WHERE status=1", conn)
         
+        # Pending Approvals
+        pending = pd.read_sql("SELECT DISTINCT date FROM inventory WHERE status=1", conn)
         if pending.empty:
             st.info("No pending approvals.")
         else:
@@ -418,7 +373,6 @@ def admin_view():
                     data = get_inventory(d)
                     data['sold'] = (data['opening'] + data['receipts']) - data['closing']
                     data['revenue'] = data['sold'] * data['price']
-                    
                     st.dataframe(data)
                     st.write(f"**Total Revenue:** ₹{data['revenue'].sum():,.2f}")
                     
@@ -433,6 +387,170 @@ def admin_view():
                         conn.commit()
                         st.warning(f"Returned {d} to Shopkeeper")
                         st.rerun()
+
+    # --- 2. NEW: STOCK INTAKE (RECEIPTS) ---
+    # --- 2. STOCK INTAKE (RECEIPTS) ---
+    elif menu == "🚚 Stock Intake":
+        st.header("🚚 Add New Stock (Receipts)")
+        
+        # Select Date & Initialize
+        date_in = st.date_input("Date of Receipt", datetime.date.today())
+        date_str = date_in.strftime("%Y-%m-%d")
+        
+        if st.button("Load Inventory for Date"):
+            initialize_day(date_str)
+            st.session_state['stock_date'] = date_str
+            st.rerun()
+
+        if 'stock_date' in st.session_state and st.session_state['stock_date'] == date_str:
+            
+            # --- TABS FOR ENTRY METHOD ---
+            tab_manual, tab_import = st.tabs(["✋ Manual Entry", "📂 Import Excel/CSV"])
+            
+            # === TAB 1: MANUAL ENTRY ===
+            with tab_manual:
+                st.info(f"Adding stock manually for: {date_str}")
+                brands_df = get_brands()
+                brand_sel = st.selectbox("Select Brand Received", brands_df['name'])
+                
+                if brand_sel:
+                    bid = brands_df[brands_df['name'] == brand_sel].iloc[0]['id']
+                    cur_rows = pd.read_sql("SELECT variant, receipts FROM inventory WHERE date=? AND brand_id=?", 
+                                           conn, params=(date_str, bid))
+                    
+                    with st.form("receipt_form"):
+                        st.subheader(f"Enter Quantities for {brand_sel}")
+                        cols = st.columns(len(VARIANTS))
+                        input_vals = {}
+                        
+                        for i, v_name in enumerate(VARIANTS):
+                            row = cur_rows[cur_rows['variant'] == v_name]
+                            current_qty = 0 if row.empty else row.iloc[0]['receipts']
+                            with cols[i]:
+                                new_qty = st.number_input(f"{v_name}", min_value=0, value=current_qty, key=f"rec_{bid}_{v_name}")
+                                input_vals[v_name] = new_qty
+                        
+                        if st.form_submit_button("➕ Update Receipts"):
+                            for v, qty in input_vals.items():
+                                conn.execute("UPDATE inventory SET receipts=? WHERE date=? AND brand_id=? AND variant=?",
+                                             (qty, date_str, bid, v))
+                            conn.commit()
+                            st.success(f"Updated stock receipts for {brand_sel}!")
+                            st.rerun()
+
+            # === TAB 2: IMPORT EXCEL/CSV ===
+            with tab_import:
+                st.subheader("📂 Bulk Import Receipts")
+                st.markdown("""
+                **Instructions:**
+                1. Upload a file (.xlsx, .xls, .csv).
+                2. Select the **Sheet** corresponding to today's date.
+                3. Ensure headers contain sizes (e.g., '750ml', 'Q', '1L').
+                """)
+                
+                uploaded_file = st.file_uploader("Upload Receipt File", type=["xlsx", "xls", "csv"], key="receipt_upload")
+                
+                if uploaded_file:
+                    try:
+                        # 1. Parse File & Sheets
+                        file_ext = uploaded_file.name.split('.')[-1].lower()
+                        data_dict = {}
+                        
+                        if file_ext == 'csv':
+                            data_dict['Default'] = pd.read_csv(uploaded_file)
+                        else:
+                            data_dict = pd.read_excel(uploaded_file, sheet_name=None)
+                        
+                        sheet_options = list(data_dict.keys())
+                        st.write(f"📄 Found {len(sheet_options)} sheet(s).")
+                        
+                        # Auto-guess sheet based on selected date
+                        default_idx = 0
+                        for i, s_name in enumerate(sheet_options):
+                            if date_in.strftime("%d") in s_name or date_in.strftime("%b") in s_name:
+                                default_idx = i
+                                
+                        selected_sheet = st.selectbox("Select Sheet to Import", sheet_options, index=default_idx)
+                        
+                        if st.button("🚀 Process Import"):
+                            df_imp = data_dict[selected_sheet]
+                            # Clean headers
+                            df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
+                            
+                            # 2. Map Columns (Reusable Logic)
+                            variant_map = {
+                                "2l": "2L", "2000ml": "2L",
+                                "1l": "1L", "1000ml": "1L", "full": "1L",
+                                "q": "Q", "750ml": "Q", "qt": "Q", "quart": "Q",
+                                "p": "P", "375ml": "P", "pint": "P", "half": "P",
+                                "n": "N", "180ml": "N", "nip": "N", "quarter": "N"
+                            }
+                            
+                            found_maps = {}
+                            for col in df_imp.columns:
+                                for key, sys_var in variant_map.items():
+                                    if key in col:
+                                        found_maps[col] = sys_var
+                                        break
+                            
+                            if not found_maps:
+                                st.error("❌ No size columns found. Check headers (need '750ml', 'Q', etc).")
+                            else:
+                                # 3. Map Brands & Update DB
+                                db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
+                                brand_map = {name.lower().strip(): bid for bid, name in zip(db_brands['id'], db_brands['name'])}
+                                
+                                # Identify Brand Column
+                                brand_col = df_imp.columns[0]
+                                for c in df_imp.columns:
+                                    if 'brand' in c or 'name' in c or 'item' in c:
+                                        brand_col = c
+                                        break
+                                
+                                match_count = 0
+                                for _, row in df_imp.iterrows():
+                                    file_brand = str(row[brand_col]).strip()
+                                    bid = brand_map.get(file_brand.lower())
+                                    
+                                    if bid:
+                                        for col_name, sys_var in found_maps.items():
+                                            # Get Receipt Value
+                                            try:
+                                                val = row[col_name]
+                                                receipt_qty = int(float(val))
+                                            except:
+                                                receipt_qty = 0
+                                            
+                                            if receipt_qty > 0:
+                                                conn.execute("""
+                                                    UPDATE inventory 
+                                                    SET receipts = ? 
+                                                    WHERE date = ? AND brand_id = ? AND variant = ?
+                                                """, (receipt_qty, date_str, bid, sys_var))
+                                        match_count += 1
+                                
+                                conn.commit()
+                                st.success(f"✅ Imported receipts for {match_count} brands successfully!")
+                                st.balloons()
+                                
+                    except Exception as e:
+                        st.error(f"Import Error: {e}")
+
+            # --- SHOW SUMMARY BELOW TABS ---
+            st.divider()
+            st.markdown("### 📊 Today's Total Receipts")
+            daily_rec = pd.read_sql("""
+                SELECT b.name, i.variant, i.receipts 
+                FROM inventory i JOIN brands b ON i.brand_id = b.id
+                WHERE i.date=? AND i.receipts > 0
+                ORDER BY b.name
+            """, conn, params=(date_str,))
+            
+            if not daily_rec.empty:
+                st.dataframe(daily_rec, use_container_width=True)
+            else:
+                st.caption("No stock receipts recorded yet for this date.")
+    # --- 3. BRAND MANAGER ---
 
     elif menu == "Brand Manager":
         st.header("🏷️ Manage Brands")
