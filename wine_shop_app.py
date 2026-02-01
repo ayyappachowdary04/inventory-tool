@@ -18,8 +18,8 @@ INITIAL_BRANDS = [
 
 # --- DATABASE MANAGEMENT ---
 # --- TEMPORARY FIX: DELETE OLD DB ---
-if os.path.exists("wineshop.db"):
-    os.remove("wineshop.db")
+##if os.path.exists("wineshop.db"):
+##    os.remove("wineshop.db")
 # ------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
