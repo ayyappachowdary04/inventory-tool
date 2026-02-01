@@ -142,6 +142,7 @@ def login_screen():
 # --- SHOPKEEPER VIEW (WIZARD) ---
 def shopkeeper_view():
     st.markdown("### 🏪 Daily Closing Entry")
+    st.info("ℹ️ Workflow: Select a date, enter closing stock counts, review the totals, and submit to Admin.")
     
     # 1. Date Selection
     date = st.date_input("Select Date", datetime.date.today())
@@ -160,7 +161,7 @@ def shopkeeper_view():
         
         # Check Locked Status
         if not df.empty and df.iloc[0]['status'] == 2:
-            st.warning(f"🔒 Data for {date_str} is LOCKED/APPROVED.")
+            st.warning(f"🔒 Data for {date_str} is APPROVED & LOCKED by Admin.")
             st.dataframe(df[['name', 'variant', 'closing', 'sold', 'revenue']])
             return
 
@@ -169,6 +170,13 @@ def shopkeeper_view():
 
         # --- TAB 1: EXISTING MANUAL WIZARD ---
         with tab_wiz:
+            st.markdown("""
+            **Best for:** Making small corrections or entering data for just a few brands.
+            * Navigate brand-by-brand using the **Next** button.
+            * System auto-saves as you go.
+            """)
+            st.divider()
+            
             brands = df['name'].unique()
             if 'wiz_idx' not in st.session_state: st.session_state['wiz_idx'] = 0
             idx = st.session_state['wiz_idx']
@@ -177,7 +185,7 @@ def shopkeeper_view():
                 current_brand = brands[idx]
                 brand_rows = df[df['name'] == current_brand]
                 
-                st.info(f"Brand {idx + 1}/{len(brands)}")
+                st.info(f"Brand {idx + 1} of {len(brands)}")
                 st.markdown(f"## 🍾 {current_brand}")
                 
                 with st.form(key=f"form_{idx}"):
@@ -197,19 +205,27 @@ def shopkeeper_view():
                         st.session_state['wiz_idx'] += 1
                         st.rerun()
             else:
-                st.success("Manual Entry Complete. Check Preview Tab.")
+                st.success("Manual Entry Complete! Please check the **Final Preview** tab to submit.")
                 if st.button("Restart Wizard"):
                     st.session_state['wiz_idx'] = 0
                     st.rerun()
 
-        # --- TAB 2: NEW IMPORT FEATURE ---
+        # --- TAB 2: IMPORT EXCEL/CSV (DOCUMENTED) ---
         with tab_import:
             st.subheader("Import Closing Stock")
             st.markdown("""
-            **Format Guide:**
-            * **Row 1:** Header with Brand Name and Sizes (e.g., 'Brand', '2L', '750ml', 'Q').
-            * **Rows:** Brand names.
-            * **Cells:** Closing quantity.
+            **Best for:** Uploading the full day's count in one go.
+            
+            ### 📋 File Format Requirements
+            * **File Types:** `.xlsx`, `.xls`, `.csv`
+            * **Columns:** Must contain headers for sizes (e.g., `750ml`, `Q`, `P`, `1L`).
+            * **Rows:** Must contain a column for Brand Name.
+            
+            **Example Layout:**
+            | Brand Name | Q | P | N |
+            | :--- | :--- | :--- | :--- |
+            | Royal Stag | 5 | 10 | 20 |
+            | Old Monk | 2 | 4 | 8 |
             """)
             
             uploaded_file = st.file_uploader("Upload Daily Report", type=["xlsx", "xls", "csv"])
@@ -230,7 +246,7 @@ def shopkeeper_view():
                     sheet_options = list(data_dict.keys())
                     st.write(f"📄 Found {len(sheet_options)} sheet(s).")
                     
-                    # Try to auto-select sheet matching the date (e.g., "01-02", "Feb 1")
+                    # Try to auto-select sheet matching the date
                     default_idx = 0
                     for i, s_name in enumerate(sheet_options):
                         if date.strftime("%d") in s_name or date.strftime("%b") in s_name:
@@ -240,12 +256,9 @@ def shopkeeper_view():
                     
                     if st.button("Process Closing Stock Import"):
                         df_imp = data_dict[selected_sheet]
-                        
-                        # Clean column headers (strip spaces, lower case)
                         df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                         
-                        # 3. MAP COLUMNS TO VARIANTS
-                        # Map common Excel headers to our System Variants: 2L, 1L, Q, P, N
+                        # 3. MAP COLUMNS
                         variant_map = {
                             "2l": "2L", "2000ml": "2L",
                             "1l": "1L", "1000ml": "1L", "full": "1L",
@@ -254,28 +267,24 @@ def shopkeeper_view():
                             "n": "N", "180ml": "N", "nip": "N", "quarter": "N"
                         }
                         
-                        # Find which columns exist in this Excel file
-                        found_maps = {} # {ExcelColName: SystemVariant}
+                        found_maps = {}
                         for col in df_imp.columns:
                             for key, sys_var in variant_map.items():
-                                if key in col: # partial match (e.g., "750ml bottles" matches "750ml")
+                                if key in col:
                                     found_maps[col] = sys_var
                                     break
                         
                         if not found_maps:
-                            st.error("❌ Could not identify any size columns (2L, 750ml, etc.). Check your headers.")
+                            st.error("❌ No size columns found (e.g., '750ml', 'Q'). Check file headers.")
                         else:
-                            st.write(f"✅ Mapped Columns: {found_maps}")
+                            st.success(f"✅ Found Columns: {list(found_maps.keys())}")
                             
                             # 4. UPDATE DATABASE
                             match_count = 0
-                            # Get existing brands mapping to IDs
                             db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
-                            # Create dictionary for fast lookup {lower_name: id}
                             brand_map = {name.lower().strip(): bid for bid, name in zip(db_brands['id'], db_brands['name'])}
                             
-                            # Identify Brand Name column (usually col 0 or 'brand' or 'name')
-                            brand_col = df_imp.columns[0] # Default to first column
+                            brand_col = df_imp.columns[0]
                             for c in df_imp.columns:
                                 if 'brand' in c or 'name' in c or 'item' in c:
                                     brand_col = c
@@ -287,15 +296,12 @@ def shopkeeper_view():
                                 
                                 if bid:
                                     for col_name, sys_var in found_maps.items():
-                                        # Get closing value from file
-                                        val = row[col_name]
-                                        # Clean value (handle NaN or strings)
                                         try:
+                                            val = row[col_name]
                                             closing_qty = int(float(val))
                                         except:
                                             closing_qty = 0
                                         
-                                        # Update DB
                                         conn.execute("""
                                             UPDATE inventory 
                                             SET closing = ? 
@@ -310,9 +316,15 @@ def shopkeeper_view():
                 except Exception as e:
                     st.error(f"Error parsing file: {e}")
 
-        # --- TAB 3: PREVIEW & SUBMIT (Existing Logic) ---
+        # --- TAB 3: PREVIEW & SUBMIT (DOCUMENTED) ---
         with tab_preview:
             st.subheader("Review & Submit")
+            st.markdown("""
+            **Final Step:**
+            1. Review the calculated **Sold** and **Revenue** numbers below.
+            2. If you see any **red warnings** (Sold < 0), please fix the closing stock in the Wizard or Import tab.
+            3. Click **Submit to Admin** to lock this entry.
+            """)
             
             # Recalculate totals
             df_final = get_inventory(date_str)
