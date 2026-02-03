@@ -3,4 +3,3 @@ pandas
 openpyxl
 xlrd>=2.0.1
 pdfplumber
-difflib
