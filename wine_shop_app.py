@@ -8,44 +8,46 @@ import pdfplumber
 # --- 1. SETUP & DATABASE (Global) ---
 st.set_page_config(page_title="🍷 Wine Shop Manager", layout="wide")
 
-# DEFINE THE DATABASE FUNCTION
-def init_db():
+# --- DATABASE SETUP (Cached & Safe) ---
+@st.cache_resource
+def get_db_connection():
+    # 1. Create Connection
     conn = sqlite3.connect('wineshop.db', check_same_thread=False)
     c = conn.cursor()
     
-    # 1. Users Table (With Schema Migration Check)
+    # 2. Schema Check (Auto-Fix Old Tables)
     try:
         c.execute("SELECT role FROM users LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("DROP TABLE IF EXISTS users")
-        
+    
+    # 3. Create Tables
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
     
-    # 2. Brands Table
     c.execute('''CREATE TABLE IF NOT EXISTS brands 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_alcohol BOOLEAN)''')
     
-    # 3. Prices Table
     c.execute('''CREATE TABLE IF NOT EXISTS prices 
                  (brand_id INTEGER, variant TEXT, price REAL, 
                   FOREIGN KEY(brand_id) REFERENCES brands(id))''')
     
-    # 4. Inventory Table
     c.execute('''CREATE TABLE IF NOT EXISTS inventory 
                  (date TEXT, brand_id INTEGER, variant TEXT, 
                   opening INTEGER, receipts INTEGER, closing INTEGER, 
                   status INTEGER DEFAULT 0)''')
     
-    # Create Default Users
-    c.execute("INSERT OR IGNORE INTO users VALUES ('admin', 'admin123', 'admin')")
-    c.execute("INSERT OR IGNORE INTO users VALUES ('shopkeeper', '1234', 'shopkeeper')")
+    # 4. Create Default Users (Explicit Columns to avoid errors)
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', 'admin123', 'admin')")
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('shopkeeper', '1234', 'shopkeeper')")
     
     conn.commit()
     return conn
 
-# INITIALIZE CONNECTION GLOBALLY
-conn = init_db()  # <--- THIS LINE MUST BE HERE (Global Scope)
+# --- GLOBAL CONNECTION VARIABLE ---
+# This line calls the function above. 
+# Because of @st.cache_resource, it only runs ONCE and stays open.
+conn = get_db_connection()
 
 # --- 2. CONSTANTS ---
 VARIANTS = ["2L", "1L", "Q", "P", "N"]
