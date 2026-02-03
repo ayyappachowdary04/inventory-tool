@@ -571,7 +571,7 @@ def admin_view():
     menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
     
     # --- 1. DASHBOARD (Enhanced Reporting) ---
-    elif menu == "Dashboard":
+    if menu == "Dashboard":
         st.header("📊 Sales Dashboard")
         
         # --- A. Date Range Selection ---
