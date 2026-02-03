@@ -51,6 +51,13 @@ conn = get_db_connection()
 # --- 2. CONSTANTS ---
 VARIANTS = ["2L", "1L", "Q", "P", "N"]
 
+# --- TIMEZONE SETUP (IST: UTC +5:30) ---
+IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
+def get_india_date():
+    """Returns the current date in India, regardless of server location."""
+    return datetime.datetime.now(IST).date()
+
 # --- PDF PARSING HELPER ---
 def parse_pdf_receipt(uploaded_file, db_brands_list):
     """
@@ -226,10 +233,8 @@ def login_screen():
                 st.error("Invalid Username or Password")
 
 # --- SHOPKEEPER VIEW (WIZARD) ---
-# --- SHOPKEEPER VIEW (WIZARD) ---
-# --- SHOPKEEPER VIEW (WIZARD) ---
 def shopkeeper_view():
-    # --- LOGOUT BUTTON (In Sidebar) ---
+    # --- LOGOUT BUTTON ---
     st.sidebar.title("Actions")
     if st.sidebar.button("🚪 Logout", key="shop_logout"):
         st.session_state['logged_in'] = False
@@ -239,11 +244,13 @@ def shopkeeper_view():
     st.markdown("### 🏪 Daily Closing Entry")
     st.info("ℹ️ Workflow: Select a date, enter closing stock counts, review the totals, and submit to Admin.")
     
-    # 1. DATE SELECTION (Fixed: Past & Today Only)
+    # 1. DATE SELECTION (Fixed: Uses IST & Allows Past Dates)
+    current_ist = get_india_date() # <--- Uses India Time
+    
     date = st.date_input(
         "Select Date", 
-        datetime.date.today(), 
-        max_value=datetime.date.today() # <--- BLOCKS FUTURE DATES
+        current_ist, 
+        max_value=current_ist # Blocks future dates based on India time
     )
     date_str = date.strftime("%Y-%m-%d")
     
@@ -275,17 +282,15 @@ def shopkeeper_view():
             **Instructions:**
             * Use **Search** to jump to a specific brand.
             * **Validation:** You cannot enter a number higher than the available stock.
-            * **Note:** Sizes with 0 stock are hidden automatically.
             """)
             st.divider()
             
             brands = sorted(df['name'].unique())
             
-            # Initialize Index
             if 'wiz_idx' not in st.session_state: st.session_state['wiz_idx'] = 0
             if st.session_state['wiz_idx'] >= len(brands): st.session_state['wiz_idx'] = 0
             
-            # --- A. SEARCH BAR ---
+            # --- SEARCH BAR ---
             current_brand_name = brands[st.session_state['wiz_idx']]
             selected_brand = st.selectbox(
                 "🔍 Search / Jump to Brand:", 
@@ -297,7 +302,7 @@ def shopkeeper_view():
                 st.session_state['wiz_idx'] = list(brands).index(selected_brand)
                 st.rerun()
 
-            # --- B. RENDER FORM ---
+            # --- RENDER FORM ---
             idx = st.session_state['wiz_idx']
             current_brand = brands[idx]
             brand_rows = df[df['name'] == current_brand]
@@ -347,14 +352,11 @@ def shopkeeper_view():
                         st.caption("No variants have active stock.")
 
                     st.divider()
-                    
-                    # --- C. NAVIGATION BUTTONS ---
                     col_prev, col_next = st.columns([1, 1])
                     go_prev = col_prev.form_submit_button("⬅️ Previous")
                     go_next = col_next.form_submit_button("Next ➡️")
                     
                     if go_prev or go_next:
-                        # 1. Save Data
                         for (bid, var), cl_val in updates.items():
                             conn.execute(
                                 "UPDATE inventory SET closing=? WHERE date=? AND brand_id=? AND variant=?",
@@ -362,14 +364,12 @@ def shopkeeper_view():
                             )
                         conn.commit()
                         
-                        # 2. Move Index
                         if go_prev:
                             if idx > 0:
                                 st.session_state['wiz_idx'] -= 1
                                 st.rerun()
                             else:
                                 st.toast("Already at the first brand.")
-                                
                         if go_next:
                             if idx < len(brands) - 1:
                                 st.session_state['wiz_idx'] += 1
@@ -378,7 +378,7 @@ def shopkeeper_view():
                                 st.success("You have reached the last brand. Check Final Preview.")
 
         # ============================================================
-        # TAB 2: IMPORT EXCEL/CSV
+        # TAB 2: IMPORT EXCEL
         # ============================================================
         with tab_import:
             st.subheader("Import Closing Stock")
@@ -395,10 +395,8 @@ def shopkeeper_view():
                     file_ext = uploaded_file.name.split('.')[-1].lower()
                     data_dict = {}
 
-                    if file_ext == 'csv':
-                        data_dict['Default'] = pd.read_csv(uploaded_file)
-                    else:
-                        data_dict = pd.read_excel(uploaded_file, sheet_name=None)
+                    if file_ext == 'csv': data_dict['Default'] = pd.read_csv(uploaded_file)
+                    else: data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                     
                     sheet_options = list(data_dict.keys())
                     default_idx = 0
@@ -413,8 +411,7 @@ def shopkeeper_view():
                         df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                         
                         variant_map = {
-                            "2l": "2L", "2000ml": "2L",
-                            "1l": "1L", "1000ml": "1L", "full": "1L",
+                            "2l": "2L", "2000ml": "2L", "1l": "1L", "1000ml": "1L", "full": "1L",
                             "q": "Q", "750ml": "Q", "qt": "Q", "quart": "Q",
                             "p": "P", "375ml": "P", "pint": "P", "half": "P",
                             "n": "N", "180ml": "N", "nip": "N", "quarter": "N"
@@ -436,32 +433,24 @@ def shopkeeper_view():
                             
                             brand_col = df_imp.columns[0]
                             for c in df_imp.columns:
-                                if 'brand' in c or 'name' in c or 'item' in c:
-                                    brand_col = c
-                                    break
+                                if 'brand' in c or 'name' in c or 'item' in c: brand_col = c; break
                             
                             for _, row in df_imp.iterrows():
                                 file_brand = str(row[brand_col]).strip()
                                 bid = brand_map.get(file_brand.lower())
-                                
                                 if bid:
                                     for col_name, sys_var in found_maps.items():
                                         try:
                                             val = row[col_name]
                                             closing_qty = int(float(val))
-                                        except:
-                                            closing_qty = 0
-                                        
+                                        except: closing_qty = 0
                                         conn.execute("""
-                                            UPDATE inventory 
-                                            SET closing = ? 
+                                            UPDATE inventory SET closing = ? 
                                             WHERE date = ? AND brand_id = ? AND variant = ?
                                         """, (closing_qty, date_str, bid, sys_var))
                                     match_count += 1
-                                    
                             conn.commit()
                             st.success(f"✅ Imported {match_count} brands!")
-                            
                 except Exception as e:
                     st.error(f"Import Error: {e}")
 
@@ -470,7 +459,6 @@ def shopkeeper_view():
         # ============================================================
         with tab_preview:
             st.subheader("📊 Final Daily Report")
-            
             df['available'] = df['opening'] + df['receipts']
             df['sold'] = df['available'] - df['closing']
             df['item_revenue'] = df['sold'] * df['price']
@@ -482,7 +470,6 @@ def shopkeeper_view():
                 st.stop()
 
             variants_order = ["2L", "1L", "Q", "P", "N"]
-            
             def make_pivot(val_col):
                 p = df.pivot_table(index='name', columns='variant', values=val_col, aggfunc='sum').fillna(0)
                 for v in variants_order:
@@ -492,7 +479,6 @@ def shopkeeper_view():
             p_open = make_pivot('available')
             p_close = make_pivot('closing')
             p_sold = make_pivot('sold')
-            
             revenue_series = df.groupby('name')['item_revenue'].sum()
 
             p_open.columns = pd.MultiIndex.from_product([['Opening (Inc Rcpt)'], p_open.columns])
@@ -517,7 +503,6 @@ def shopkeeper_view():
                 st.balloons()
                 st.success("Report Submitted Successfully!")
 # --- ADMIN VIEW ---
-# --- ADMIN VIEW ---
 def admin_view():
     st.sidebar.title("Admin Menu")
     
@@ -529,11 +514,7 @@ def admin_view():
         st.rerun()
         
     st.sidebar.divider()
-    
-    # Existing Menu Logic...
     menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
-    
-    # ... rest of the admin code ...
     
     # --- 1. DASHBOARD ---
     if menu == "Dashboard":
@@ -541,10 +522,14 @@ def admin_view():
         
         st.subheader("📅 Download Reports")
         col_d1, col_d2 = st.columns(2)
+        
+        # IST DATE USED HERE
+        current_ist = get_india_date() 
+        
         with col_d1:
-            start_date = st.date_input("From Date", datetime.date.today())
+            start_date = st.date_input("From Date", current_ist)
         with col_d2:
-            end_date = st.date_input("To Date", datetime.date.today())
+            end_date = st.date_input("To Date", current_ist)
         
         if start_date > end_date:
             st.error("Error: 'From Date' must be before 'To Date'.")
@@ -604,13 +589,10 @@ def admin_view():
                 
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     days_with_data = 0
-                    
                     for d in date_list:
                         d_str = d.strftime("%Y-%m-%d")
                         sheet_name = d.strftime("%b %d")
-                        
                         daily_df = get_formatted_daily_df(d_str)
-                        
                         if daily_df is not None:
                             daily_df.to_excel(writer, sheet_name=sheet_name)
                             days_with_data += 1
@@ -634,9 +616,11 @@ def admin_view():
                     st.warning("⚠️ No data found for selected range.")
 
         st.divider()
-        
         st.subheader("📈 Quick Look: Today's Stats")
-        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        
+        # IST DATE USED HERE FOR "TODAY'S STATS"
+        today_str = get_india_date().strftime("%Y-%m-%d")
+        
         today_df = get_formatted_daily_df(today_str)
         
         if today_df is not None:
@@ -653,7 +637,9 @@ def admin_view():
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
         
-        date_in = st.date_input("Date of Receipt", datetime.date.today())
+        # IST DATE USED HERE
+        date_in = st.date_input("Date of Receipt", get_india_date())
+        
         date_str = date_in.strftime("%Y-%m-%d")
         
         if st.button("Load / Refresh Inventory for Date"):
@@ -1043,7 +1029,7 @@ def admin_view():
             st.download_button(
                 label="📥 Download Database Backup (.db)",
                 data=db_bytes,
-                file_name=f"wineshop_backup_{datetime.date.today()}.db",
+                file_name=f"wineshop_backup_{get_india_date()}.db",
                 mime="application/octet-stream"
             )
         except Exception as e:
@@ -1090,7 +1076,6 @@ def admin_view():
                             st.error(f"Error deleting brands: {e}")
                     else:
                         st.warning("Please check the confirmation box.")
-
 # --- MAIN APP LOGIC ---
 if __name__ == "__main__":
     if 'logged_in' not in st.session_state:
