@@ -999,21 +999,25 @@ def admin_view():
         else:
             st.info("No brands found.")
     # --- 4. IMPORT EXCEL (FIXED: ALLOW 0 PRICE UPDATES) ---
+    # --- 4. IMPORT EXCEL (SMART MATCHING & NO HARDCODED LIST) ---
     elif menu == "Import Excel":
         st.header("📥 Import Master Price List")
         st.markdown("""
-        **Purpose:** Bulk upload Brands AND Prices together.
-        **Duplicate Protection:** Ignores spaces and capitalization.
+        **Purpose:** Upload your full brand list here to populate the system.
         
-        ### 📋 Rules
-        * **Type `0`** in Excel to set a price to zero.
-        * **Leave Blank** in Excel to keep the existing price unchanged.
+        ### 🧠 Smart Features
+        * **Duplicate Protection:** Ignores spaces/case (e.g., "royal stag" = "Royal Stag").
+        * **Typo Detection:** Fixes small errors (e.g., "Blac Dog" -> "Black Dog").
+        * **Price Rules:** * Type `0` to set price to zero.
+            * Leave **Blank** to keep existing price.
         """)
         
         uploaded_file = st.file_uploader("Upload Price List", type=["xlsx", "xls", "csv"])
         
         if uploaded_file:
             if st.button("🚀 Process Import"):
+                import difflib  # Built-in library for fuzzy matching
+
                 try:
                     # 1. Parse File
                     file_ext = uploaded_file.name.split('.')[-1].lower()
@@ -1021,12 +1025,21 @@ def admin_view():
                     if file_ext == 'csv': data_dict['Default'] = pd.read_csv(uploaded_file)
                     else: data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                     
-                    # 2. Build Lookup Map
+                    # 2. Load Existing Brands for Matching
                     existing_brands = pd.read_sql("SELECT id, name FROM brands", conn)
-                    brand_map = {str(row['name']).lower().replace(" ", ""): row['id'] for _, row in existing_brands.iterrows()}
+                    
+                    # Map 1: Strict Normalized Key ("100pipers" -> ID)
+                    brand_map_strict = {
+                        str(row['name']).lower().replace(" ", ""): row['id'] 
+                        for _, row in existing_brands.iterrows()
+                    }
+                    
+                    # Map 2: List of clean names for Fuzzy Matching
+                    existing_names_list = existing_brands['name'].tolist()
                     
                     total_brands_touched = 0
                     total_prices_updated = 0
+                    typos_fixed = 0
                     
                     # 3. Process Sheets
                     for sheet_name, df_imp in data_dict.items():
@@ -1035,7 +1048,7 @@ def admin_view():
                         # Clean Headers
                         df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                         
-                        # Map Variant Columns
+                        # Identify Variant Columns
                         variant_map = {
                             "2l": "2L", "1l": "1L", "q": "Q", "750ml": "Q", 
                             "p": "P", "375ml": "P", "n": "N", "180ml": "N"
@@ -1049,7 +1062,7 @@ def admin_view():
                         
                         if not found_maps: continue
                         
-                        # Find Brand Column
+                        # Identify Brand Column
                         brand_col = df_imp.columns[0]
                         for c in df_imp.columns:
                             if 'brand' in c or 'name' in c: brand_col = c; break
@@ -1060,34 +1073,49 @@ def admin_view():
                             raw_brand = str(row[brand_col]).strip()
                             if not raw_brand or raw_brand.lower() == 'nan': continue
                             
-                            # Handle Brand Logic
-                            search_key = raw_brand.lower().replace(" ", "")
-                            bid = brand_map.get(search_key)
+                            # --- STEP A: RESOLVE BRAND ID ---
+                            bid = None
                             
-                            if not bid:
-                                # Create New Brand
-                                clean_name = " ".join(raw_brand.split()).title()
-                                conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
-                                bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
-                                brand_map[search_key] = bid 
-                                for v in VARIANTS: # Init with 0.0
-                                    conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
-                            
+                            # 1. Try Strict Match (Ignore Case/Space)
+                            strict_key = raw_brand.lower().replace(" ", "")
+                            if strict_key in brand_map_strict:
+                                bid = brand_map_strict[strict_key]
+                            else:
+                                # 2. Try Fuzzy Match (Typo Detection)
+                                # cutoff=0.85 means names must be 85% similar
+                                matches = difflib.get_close_matches(raw_brand, existing_names_list, n=1, cutoff=0.85)
+                                
+                                if matches:
+                                    # Found a close match! Use existing ID.
+                                    matched_name = matches[0]
+                                    matched_key = matched_name.lower().replace(" ", "")
+                                    bid = brand_map_strict.get(matched_key)
+                                    
+                                    # (Optional) Notify user in logs
+                                    # st.toast(f"Typo Fixed: '{raw_brand}' mapped to '{matched_name}'")
+                                    typos_fixed += 1
+                                else:
+                                    # 3. Truly New Brand -> Create It
+                                    clean_name = " ".join(raw_brand.split()).title()
+                                    conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
+                                    bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
+                                    
+                                    # Add to maps immediately to catch duplicates in same file
+                                    brand_map_strict[clean_name.lower().replace(" ", "")] = bid
+                                    existing_names_list.append(clean_name)
+                                    
+                                    # Init empty prices
+                                    for v in VARIANTS:
+                                        conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
+
                             total_brands_touched += 1
 
-                            # Update Prices
+                            # --- STEP B: UPDATE PRICES ---
                             for col_name, sys_var in found_maps.items():
                                 val = row[col_name]
-                                
-                                # FIX START: Handle NaN and 0 correctly
                                 try:
-                                    # Check if cell is empty/NaN
-                                    if pd.isna(val) or str(val).strip() == '':
-                                        continue # Skip empty cells (Keep existing price)
-                                    
+                                    if pd.isna(val) or str(val).strip() == '': continue
                                     price_val = float(val)
-                                    
-                                    # Allow 0.0 updates, but prevent negative numbers
                                     if price_val >= 0:
                                         conn.execute("""
                                             UPDATE prices 
@@ -1096,11 +1124,15 @@ def admin_view():
                                         """, (price_val, bid, sys_var))
                                         total_prices_updated += 1
                                 except:
-                                    continue 
-                                # FIX END
+                                    continue
                                     
                     conn.commit()
-                    st.success(f"✅ Import Complete! Updated {total_prices_updated} prices.")
+                    
+                    msg = f"✅ Import Complete!\n• Brands Processed: {total_brands_touched}\n• Prices Updated: {total_prices_updated}"
+                    if typos_fixed > 0:
+                        msg += f"\n• 🪄 Auto-corrected {typos_fixed} typos."
+                    
+                    st.success(msg)
                     st.balloons()
                         
                 except Exception as e:
