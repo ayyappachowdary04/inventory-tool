@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 import datetime
 import pdfplumber
-import difflib  # Ensure this is imported for the new fuzzy logic
+#import difflib  # Ensure this is imported for the new fuzzy logic
 
 # --- 1. SETUP & DATABASE (Global) ---
 st.set_page_config(page_title="🍷 Wine Shop Manager", layout="wide")
