@@ -570,60 +570,140 @@ def admin_view():
     st.sidebar.title("Admin Menu")
     menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
     
-    # --- 1. DASHBOARD ---
-    if menu == "Dashboard":
-        st.header("📋 Approval Dashboard")
-        st.markdown("""
-        **Overview:**
-        * View daily sales summaries.
-        * Approve or Reject closing stock submissions from shopkeepers.
-        * Export inventory reports to CSV for accounting.
-        """)
+    # --- 1. DASHBOARD (Enhanced Reporting) ---
+    elif menu == "Dashboard":
+        st.header("📊 Sales Dashboard")
         
-        # Export Data Button
-        st.subheader("Export Data")
-        st.info("ℹ️ Select a date to download a complete report of Opening, Receipts, Closing, and Revenue.")
+        # --- A. Date Range Selection ---
+        st.subheader("📅 Download Reports")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            start_date = st.date_input("From Date", datetime.date.today())
+        with col_d2:
+            end_date = st.date_input("To Date", datetime.date.today())
         
-        export_date = st.date_input("Select Date for Report", datetime.date.today())
-        date_str = export_date.strftime("%Y-%m-%d")
-        
-        df_export = get_inventory(date_str)
-        if not df_export.empty:
-            df_export['sold'] = (df_export['opening'] + df_export['receipts']) - df_export['closing']
-            df_export['revenue'] = df_export['sold'] * df_export['price']
-            csv_data = df_export[['name', 'variant', 'opening', 'receipts', 'closing', 'sold', 'revenue', 'status']].to_csv(index=False).encode('utf-8')
-            st.download_button(label="📥 Download CSV Report", data=csv_data, file_name=f"inventory_{date_str}.csv", mime="text/csv")
+        if start_date > end_date:
+            st.error("Error: 'From Date' must be before 'To Date'.")
         else:
-            st.warning(f"No data found for {date_str}")
+            # Generate the Date List
+            delta = end_date - start_date
+            date_list = [start_date + datetime.timedelta(days=i) for i in range(delta.days + 1)]
             
+            st.info(f"Selected Range: {len(date_list)} days")
+
+            # --- B. Helper Function to Build the Matrix ---
+            def get_formatted_daily_df(target_date_str):
+                # 1. Fetch Data
+                query = """
+                    SELECT b.name, i.variant, i.opening, i.receipts, i.closing, p.price
+                    FROM inventory i
+                    JOIN brands b ON i.brand_id = b.id
+                    LEFT JOIN prices p ON i.brand_id = p.brand_id AND i.variant = p.variant
+                    WHERE i.date = ?
+                """
+                df = pd.read_sql(query, conn, params=(target_date_str,))
+                
+                if df.empty:
+                    return None
+                
+                # 2. Calculations
+                df['available'] = df['opening'] + df['receipts']
+                df['sold'] = df['available'] - df['closing']
+                df['revenue'] = df['sold'] * df['price']
+                
+                # 3. Pivot Tables (Matrix Shape)
+                # We need specific variant order
+                variants_order = ["2L", "1L", "Q", "P", "N"]
+                
+                def make_pivot(val_col):
+                    p = df.pivot_table(index='name', columns='variant', values=val_col, aggfunc='sum').fillna(0)
+                    for v in variants_order:
+                        if v not in p.columns: p[v] = 0
+                    return p[variants_order]
+
+                p_open = make_pivot('available')
+                p_close = make_pivot('closing')
+                p_sold = make_pivot('sold')
+                
+                # Revenue Total per Brand
+                rev_series = df.groupby('name')['revenue'].sum()
+                
+                # 4. Create Multi-Index Headers (The 2-Row Format)
+                # Level 1 Headers
+                p_open.columns = pd.MultiIndex.from_product([['1. Opening (Inc. Rcpts)'], p_open.columns])
+                p_close.columns = pd.MultiIndex.from_product([['2. Closing Stock'], p_close.columns])
+                p_sold.columns = pd.MultiIndex.from_product([['3. Sales Units'], p_sold.columns])
+                
+                # 5. Combine
+                final_df = pd.concat([p_open, p_close, p_sold], axis=1)
+                
+                # Add Total Revenue Column (Level 1: 'Sales', Level 2: 'Total Revenue')
+                final_df[('3. Sales Units', 'Total Revenue (₹)')] = rev_series
+                
+                return final_df.fillna(0)
+
+            # --- C. Generate Button ---
+            if st.button("📥 Generate Multi-Sheet Excel Report"):
+                import io
+                
+                # Buffer for Excel file
+                output = io.BytesIO()
+                
+                # Create Excel Writer object
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    days_with_data = 0
+                    
+                    for d in date_list:
+                        d_str = d.strftime("%Y-%m-%d")
+                        sheet_name = d.strftime("%b %d") # e.g. "Oct 01"
+                        
+                        # Get Data
+                        daily_df = get_formatted_daily_df(d_str)
+                        
+                        if daily_df is not None:
+                            # Write to Sheet
+                            daily_df.to_excel(writer, sheet_name=sheet_name)
+                            days_with_data += 1
+                    
+                    # If absolutely no data found for any day
+                    if days_with_data == 0:
+                        # Create a dummy sheet so file isn't corrupt
+                        pd.DataFrame({"Message": ["No Data Found"]}).to_excel(writer, sheet_name="No Data")
+
+                # Prepare Download
+                data_xlsx = output.getvalue()
+                
+                filename = f"Sales_Report_{start_date}_to_{end_date}.xlsx"
+                st.download_button(
+                    label="⬇️ Download Excel File (.xlsx)",
+                    data=data_xlsx,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+                if days_with_data == 0:
+                    st.warning("⚠️ The generated file is empty because no data was found for the selected dates.")
+                else:
+                    st.success(f"✅ Report ready! Contains {days_with_data} daily sheets.")
+
         st.divider()
         
-        # Pending Approvals
-        st.subheader("Pending Approvals")
-        pending = pd.read_sql("SELECT DISTINCT date FROM inventory WHERE status=1", conn)
-        if pending.empty:
-            st.success("All caught up! No pending approvals.")
+        # --- D. Visuals (Optional: Quick Look at Today) ---
+        st.subheader("📈 Quick Look: Today's Stats")
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        today_df = get_formatted_daily_df(today_str)
+        
+        if today_df is not None:
+            # Flatten columns for screen display (Streamlit hates tuples in keys)
+            display_df = today_df.copy()
+            display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
+            st.dataframe(display_df, height=400)
+            
+            # Simple Metric
+            total_rev = today_df[('3. Sales Units', 'Total Revenue (₹)')].sum()
+            st.metric("Today's Total Revenue", f"₹ {total_rev:,.2f}")
         else:
-            for d in pending['date']:
-                with st.expander(f"🔔 Pending Submission: {d}"):
-                    data = get_inventory(d)
-                    data['sold'] = (data['opening'] + data['receipts']) - data['closing']
-                    data['revenue'] = data['sold'] * data['price']
-                    st.dataframe(data)
-                    st.write(f"**Total Revenue:** ₹{data['revenue'].sum():,.2f}")
-                    
-                    c1, c2 = st.columns(2)
-                    if c1.button("✅ Approve & Lock", key=f"app_{d}"):
-                        conn.execute("UPDATE inventory SET status=2 WHERE date=?", (d,))
-                        conn.commit()
-                        st.success(f"Approved {d}")
-                        st.rerun()
-                    if c2.button("🔓 Unlock/Reject", key=f"rej_{d}"):
-                        conn.execute("UPDATE inventory SET status=0 WHERE date=?", (d,))
-                        conn.commit()
-                        st.warning(f"Returned {d} to Shopkeeper")
-                        st.rerun()
-
+            st.info("No data available for today yet.")
     # --- 2. STOCK INTAKE (RECEIPTS) ---
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
