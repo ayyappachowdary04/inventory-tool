@@ -227,6 +227,7 @@ def login_screen():
 
 # --- SHOPKEEPER VIEW (WIZARD) ---
 # --- SHOPKEEPER VIEW (WIZARD) ---
+# --- SHOPKEEPER VIEW (WIZARD) ---
 def shopkeeper_view():
     # --- LOGOUT BUTTON (In Sidebar) ---
     st.sidebar.title("Actions")
@@ -234,17 +235,15 @@ def shopkeeper_view():
         st.session_state['logged_in'] = False
         st.session_state['role'] = None
         st.rerun()
-        
+
     st.markdown("### 🏪 Daily Closing Entry")
     st.info("ℹ️ Workflow: Select a date, enter closing stock counts, review the totals, and submit to Admin.")
     
-    # ... rest of the shopkeeper code ...
-    
-    # 1. DATE SELECTION
+    # 1. DATE SELECTION (Fixed: Past & Today Only)
     date = st.date_input(
         "Select Date", 
         datetime.date.today(), 
-        min_value=datetime.date.today()
+        max_value=datetime.date.today() # <--- BLOCKS FUTURE DATES
     )
     date_str = date.strftime("%Y-%m-%d")
     
@@ -259,6 +258,7 @@ def shopkeeper_view():
     if 'current_date' in st.session_state and st.session_state['current_date'] == date_str:
         df = get_inventory(date_str)
         
+        # Check Locked Status
         if not df.empty and df.iloc[0]['status'] == 2:
             st.warning(f"🔒 Data for {date_str} is APPROVED & LOCKED by Admin.")
             st.dataframe(df[['name', 'variant', 'closing', 'sold', 'revenue']])
@@ -516,7 +516,6 @@ def shopkeeper_view():
                 conn.commit()
                 st.balloons()
                 st.success("Report Submitted Successfully!")
-
 # --- ADMIN VIEW ---
 # --- ADMIN VIEW ---
 def admin_view():
