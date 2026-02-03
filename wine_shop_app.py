@@ -1234,15 +1234,17 @@ def admin_view():
                             st.error(f"Error deleting brands: {e}")
                     else:
                         st.warning("Please check the confirmation box.")
-# --- MAIN APP ROUTING ---
-if 'role' not in st.session_state:
-    login_screen()
-else:
-    if st.sidebar.button("Logout"):
-        del st.session_state['role']
-        st.rerun()
-        
-    if st.session_state['role'] == 'shopkeeper':
-        shopkeeper_view()
-    elif st.session_state['role'] == 'admin':
-        admin_view()
+# --- MAIN APP LOGIC ---
+if __name__ == "__main__":
+    if 'logged_in' not in st.session_state:
+        st.session_state['logged_in'] = False
+        st.session_state['user'] = None
+        st.session_state['role'] = None
+
+    if not st.session_state['logged_in']:
+        login_screen()
+    else:
+        if st.session_state['role'] == 'admin':
+            admin_view()
+        else:
+            shopkeeper_view()
