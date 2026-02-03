@@ -570,8 +570,8 @@ def admin_view():
     st.sidebar.title("Admin Menu")
     menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
     
-    # --- 1. DASHBOARD (Enhanced Reporting) ---
-    if menu == "Dashboard":
+    # --- 1. DASHBOARD (With Totals Row) ---
+    elif menu == "Dashboard":
         st.header("📊 Sales Dashboard")
         
         # --- A. Date Range Selection ---
@@ -591,7 +591,7 @@ def admin_view():
             
             st.info(f"Selected Range: {len(date_list)} days")
 
-            # --- B. Helper Function to Build the Matrix ---
+            # --- B. Helper Function (Calculates Data + Totals) ---
             def get_formatted_daily_df(target_date_str):
                 # 1. Fetch Data
                 query = """
@@ -611,8 +611,7 @@ def admin_view():
                 df['sold'] = df['available'] - df['closing']
                 df['revenue'] = df['sold'] * df['price']
                 
-                # 3. Pivot Tables (Matrix Shape)
-                # We need specific variant order
+                # 3. Pivot Tables
                 variants_order = ["2L", "1L", "Q", "P", "N"]
                 
                 def make_pivot(val_col):
@@ -625,11 +624,9 @@ def admin_view():
                 p_close = make_pivot('closing')
                 p_sold = make_pivot('sold')
                 
-                # Revenue Total per Brand
                 rev_series = df.groupby('name')['revenue'].sum()
                 
-                # 4. Create Multi-Index Headers (The 2-Row Format)
-                # Level 1 Headers
+                # 4. Multi-Index Headers
                 p_open.columns = pd.MultiIndex.from_product([['1. Opening (Inc. Rcpts)'], p_open.columns])
                 p_close.columns = pd.MultiIndex.from_product([['2. Closing Stock'], p_close.columns])
                 p_sold.columns = pd.MultiIndex.from_product([['3. Sales Units'], p_sold.columns])
@@ -637,43 +634,42 @@ def admin_view():
                 # 5. Combine
                 final_df = pd.concat([p_open, p_close, p_sold], axis=1)
                 
-                # Add Total Revenue Column (Level 1: 'Sales', Level 2: 'Total Revenue')
+                # Add Revenue Column
                 final_df[('3. Sales Units', 'Total Revenue (₹)')] = rev_series
+                final_df = final_df.fillna(0)
                 
-                return final_df.fillna(0)
+                # --- 6. ADD TOTALS ROW (New Feature) ---
+                # Calculate sum of all numeric columns
+                totals = final_df.sum(numeric_only=True)
+                # Assign to a new row named 'TOTAL'
+                final_df.loc['TOTAL'] = totals
+                
+                return final_df
 
-            # --- C. Generate Button ---
+            # --- C. Generate Excel ---
             if st.button("📥 Generate Multi-Sheet Excel Report"):
                 import io
-                
-                # Buffer for Excel file
                 output = io.BytesIO()
                 
-                # Create Excel Writer object
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     days_with_data = 0
                     
                     for d in date_list:
                         d_str = d.strftime("%Y-%m-%d")
-                        sheet_name = d.strftime("%b %d") # e.g. "Oct 01"
+                        sheet_name = d.strftime("%b %d")
                         
-                        # Get Data
                         daily_df = get_formatted_daily_df(d_str)
                         
                         if daily_df is not None:
-                            # Write to Sheet
                             daily_df.to_excel(writer, sheet_name=sheet_name)
                             days_with_data += 1
                     
-                    # If absolutely no data found for any day
                     if days_with_data == 0:
-                        # Create a dummy sheet so file isn't corrupt
                         pd.DataFrame({"Message": ["No Data Found"]}).to_excel(writer, sheet_name="No Data")
 
-                # Prepare Download
                 data_xlsx = output.getvalue()
-                
                 filename = f"Sales_Report_{start_date}_to_{end_date}.xlsx"
+                
                 st.download_button(
                     label="⬇️ Download Excel File (.xlsx)",
                     data=data_xlsx,
@@ -681,29 +677,33 @@ def admin_view():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
-                if days_with_data == 0:
-                    st.warning("⚠️ The generated file is empty because no data was found for the selected dates.")
+                if days_with_data > 0:
+                    st.success(f"✅ Report Ready! Includes TOTALS for {days_with_data} days.")
                 else:
-                    st.success(f"✅ Report ready! Contains {days_with_data} daily sheets.")
+                    st.warning("⚠️ No data found for selected range.")
 
         st.divider()
         
-        # --- D. Visuals (Optional: Quick Look at Today) ---
+        # --- D. Visuals (Quick Look) ---
         st.subheader("📈 Quick Look: Today's Stats")
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         today_df = get_formatted_daily_df(today_str)
         
         if today_df is not None:
-            # Flatten columns for screen display (Streamlit hates tuples in keys)
+            # Flatten columns for screen display
             display_df = today_df.copy()
             display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
-            st.dataframe(display_df, height=400)
             
-            # Simple Metric
-            total_rev = today_df[('3. Sales Units', 'Total Revenue (₹)')].sum()
+            # Highlight the TOTAL row in the UI
+            st.dataframe(display_df, height=400, use_container_width=True)
+            
+            # Extract just the revenue number for the metric card
+            # We access the 'TOTAL' row and the specific revenue column
+            total_rev = today_df.loc['TOTAL', ('3. Sales Units', 'Total Revenue (₹)')]
             st.metric("Today's Total Revenue", f"₹ {total_rev:,.2f}")
         else:
             st.info("No data available for today yet.")
+            
     # --- 2. STOCK INTAKE (RECEIPTS) ---
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
