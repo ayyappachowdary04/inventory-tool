@@ -113,14 +113,6 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
 # --- CONFIGURATION & CONSTANTS ---
 DB_FILE = "wineshop.db"
 VARIANTS = ["2L", "1L", "Q", "P", "N"] # Q=750ml, P=375ml, N=180ml
-# Initial 64 Brands from your list (Truncated for brevity, but structure is ready)
-INITIAL_BRANDS = [
-    "100 Pipers", "Teachers", "Black Dog", "Vat 69", "Antiquity", "Signature", 
-    "Royal Challenge", "Blenders Pride", "Royal Stag", "McDowell's (MCW)", 
-    "Imperial Blue (IB)", "8PM", "Royal Green", "Bagpiper", "Officer's Choice (OCW)",
-    "Old Monk", "Magic Moments", "Smirnoff", "Kingfisher Strong", "Kingfisher Lager", 
-    "Budweiser", "Thums Up", "Coca Cola", "Water 1L"
-]
 
 # --- DATABASE MANAGEMENT ---
 # --- TEMPORARY FIX: DELETE OLD DB ---
@@ -128,40 +120,31 @@ INITIAL_BRANDS = [
 ##    os.remove("wineshop.db")
 # ------------------------------------
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect('wineshop.db', check_same_thread=False)
     c = conn.cursor()
     
-    # 1. Existing Tables
+    # 1. Users Table
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+    
+    # 2. Brands Table (Master List)
     c.execute('''CREATE TABLE IF NOT EXISTS brands 
-                 (id INTEGER PRIMARY KEY, name TEXT UNIQUE, is_alcohol BOOLEAN)''')
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_alcohol BOOLEAN)''')
+    
+    # 3. Prices Table (Master Price List)
     c.execute('''CREATE TABLE IF NOT EXISTS prices 
-                 (brand_id INTEGER, variant TEXT, price REAL, UNIQUE(brand_id, variant))''')
+                 (brand_id INTEGER, variant TEXT, price REAL, 
+                  FOREIGN KEY(brand_id) REFERENCES brands(id))''')
+    
+    # 4. Inventory Table (Daily Stock)
     c.execute('''CREATE TABLE IF NOT EXISTS inventory 
                  (date TEXT, brand_id INTEGER, variant TEXT, 
                   opening INTEGER, receipts INTEGER, closing INTEGER, 
-                  status INTEGER, UNIQUE(date, brand_id, variant))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (username TEXT PRIMARY KEY, password TEXT)''')
+                  status INTEGER DEFAULT 0)''')
     
-    # 2. Create Default Admin (if missing)
-    c.execute("SELECT count(*) FROM users WHERE username='admin'")
-    if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("admin", "admin"))
-    
-    # --- NEW: Create Default Shopkeeper (if missing) ---
-    c.execute("SELECT count(*) FROM users WHERE username='shopkeeper'")
-    if c.fetchone()[0] == 0:
-        # Default PIN is 1234
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("shopkeeper", "1234"))
-
-    # 3. Seed Brands (Same as before)
-    c.execute("SELECT count(*) FROM brands")
-    if c.fetchone()[0] == 0:
-        for b in INITIAL_BRANDS:
-            c.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (b, True))
-            bid = c.lastrowid
-            for v in VARIANTS:
-                c.execute("INSERT INTO prices VALUES (?, ?, ?)", (bid, v, 500.0))
+    # Create Default Admin (if not exists)
+    c.execute("INSERT OR IGNORE INTO users VALUES ('admin', 'admin123', 'admin')")
+    c.execute("INSERT OR IGNORE INTO users VALUES ('shopkeeper', '1234', 'shopkeeper')")
     
     conn.commit()
     return conn
