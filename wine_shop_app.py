@@ -123,33 +123,40 @@ def init_db():
     conn = sqlite3.connect('wineshop.db', check_same_thread=False)
     c = conn.cursor()
     
-    # 1. Users Table
+    # --- FIX: Check if we need to migrate/reset ---
+    # We check if the 'users' table has the new 'role' column. 
+    # If not, we drop the table to recreate it correctly.
+    try:
+        c.execute("SELECT role FROM users LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column 'role' missing -> Old schema detected. Drop table.
+        c.execute("DROP TABLE IF EXISTS users")
+    
+    # 1. Users Table (Now guaranteed to be fresh if schema was old)
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
     
-    # 2. Brands Table (Master List)
+    # 2. Brands Table
     c.execute('''CREATE TABLE IF NOT EXISTS brands 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, is_alcohol BOOLEAN)''')
     
-    # 3. Prices Table (Master Price List)
+    # 3. Prices Table
     c.execute('''CREATE TABLE IF NOT EXISTS prices 
                  (brand_id INTEGER, variant TEXT, price REAL, 
                   FOREIGN KEY(brand_id) REFERENCES brands(id))''')
     
-    # 4. Inventory Table (Daily Stock)
+    # 4. Inventory Table
     c.execute('''CREATE TABLE IF NOT EXISTS inventory 
                  (date TEXT, brand_id INTEGER, variant TEXT, 
                   opening INTEGER, receipts INTEGER, closing INTEGER, 
                   status INTEGER DEFAULT 0)''')
     
-    # Create Default Admin (if not exists)
-    c.execute("INSERT OR IGNORE INTO users VALUES ('admin', 'admin123', 'admin')")
-    c.execute("INSERT OR IGNORE INTO users VALUES ('shopkeeper', '1234', 'shopkeeper')")
+    # Create Default Users (INSERT OR IGNORE safely handles duplicates)
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', 'admin123', 'admin')")
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('shopkeeper', '1234', 'shopkeeper')")
     
     conn.commit()
     return conn
-
-conn = init_db()
 
 # --- HELPER FUNCTIONS ---
 def get_brands():
