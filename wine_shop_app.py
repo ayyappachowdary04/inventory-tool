@@ -226,9 +226,19 @@ def login_screen():
                 st.error("Invalid Username or Password")
 
 # --- SHOPKEEPER VIEW (WIZARD) ---
+# --- SHOPKEEPER VIEW (WIZARD) ---
 def shopkeeper_view():
+    # --- LOGOUT BUTTON (In Sidebar) ---
+    st.sidebar.title("Actions")
+    if st.sidebar.button("🚪 Logout", key="shop_logout"):
+        st.session_state['logged_in'] = False
+        st.session_state['role'] = None
+        st.rerun()
+        
     st.markdown("### 🏪 Daily Closing Entry")
     st.info("ℹ️ Workflow: Select a date, enter closing stock counts, review the totals, and submit to Admin.")
+    
+    # ... rest of the shopkeeper code ...
     
     # 1. DATE SELECTION
     date = st.date_input(
@@ -508,9 +518,23 @@ def shopkeeper_view():
                 st.success("Report Submitted Successfully!")
 
 # --- ADMIN VIEW ---
+# --- ADMIN VIEW ---
 def admin_view():
     st.sidebar.title("Admin Menu")
+    
+    # --- LOGOUT BUTTON ---
+    if st.sidebar.button("🚪 Logout", key="admin_logout"):
+        st.session_state['logged_in'] = False
+        st.session_state['role'] = None
+        st.session_state['user'] = None
+        st.rerun()
+        
+    st.sidebar.divider()
+    
+    # Existing Menu Logic...
     menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
+    
+    # ... rest of the admin code ...
     
     # --- 1. DASHBOARD ---
     if menu == "Dashboard":
