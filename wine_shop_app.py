@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 import datetime
 import pdfplumber
-#import difflib  # Ensure this is imported for the new fuzzy logic
+import difflib  # UNCOMMENTED: Needed for fuzzy matching
 
 # --- 1. SETUP & DATABASE (Global) ---
 st.set_page_config(page_title="🍷 Wine Shop Manager", layout="wide")
@@ -37,7 +37,7 @@ def get_db_connection():
                   opening INTEGER, receipts INTEGER, closing INTEGER, 
                   status INTEGER DEFAULT 0)''')
     
-    # 4. Create Default Users (Explicit Columns to avoid errors)
+    # 4. Create Default Users
     c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', 'admin123', 'admin')")
     c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('shopkeeper', '1234', 'shopkeeper')")
     
@@ -45,14 +45,13 @@ def get_db_connection():
     return conn
 
 # --- GLOBAL CONNECTION VARIABLE ---
-# This line calls the function above. 
-# Because of @st.cache_resource, it only runs ONCE and stays open.
+# This ensures 'conn' is available to ALL functions below
 conn = get_db_connection()
 
 # --- 2. CONSTANTS ---
 VARIANTS = ["2L", "1L", "Q", "P", "N"]
+
 # --- PDF PARSING HELPER ---
-# --- PDF PARSING HELPER (FIXED) ---
 def parse_pdf_receipt(uploaded_file, db_brands_list):
     """
     Extracts inventory data from the specific PDF format provided.
@@ -85,7 +84,6 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
                 header_idx = -1
                 for i, row in enumerate(table):
                     row_text = [str(x).lower().replace('\n', ' ') for x in row if x]
-                    # Look for specific keywords in your PDF
                     if any("brand name" in x for x in row_text) and any("size" in x for x in row_text):
                         header_idx = i
                         break
@@ -96,7 +94,6 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
                     try:
                         col_brand = next(i for i, h in enumerate(headers) if "brand name" in h)
                         col_size  = next(i for i, h in enumerate(headers) if "size" in h)
-                        # Look for 'cases' column specifically
                         col_cases = next(i for i, h in enumerate(headers) if "cases" in h)
                     except StopIteration:
                         continue 
@@ -119,7 +116,6 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
 
                         # 2. Parse Qty (Strictly Cases)
                         try:
-                            # Handle formats like "1" or "1/0" or "1.0"
                             cases_str = raw_cases.split('/')[0].strip()
                             cases = float(cases_str)
                         except:
@@ -135,7 +131,6 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
                         matched_id = None
                         matched_name = None
                         
-                        # Fuzzy match: "Vat 69" in "VAT 69 BLENDED SCOTCH..."
                         for db_name, db_id in db_brands_list:
                             if db_name.lower() in raw_brand.lower():
                                 matched_id = db_id
@@ -146,7 +141,7 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
                             variant_code = size_to_variant.get(size_ml)
                             if variant_code:
                                 extracted_data.append({
-                                    "brand_id": int(matched_id), # Ensure INT
+                                    "brand_id": int(matched_id),
                                     "brand_name": matched_name,
                                     "variant": variant_code,
                                     "qty": total_qty,
@@ -154,6 +149,7 @@ def parse_pdf_receipt(uploaded_file, db_brands_list):
                                 })
     
     return pd.DataFrame(extracted_data)
+
 # --- HELPER FUNCTIONS ---
 def get_brands():
     return pd.read_sql("SELECT * FROM brands ORDER BY name", conn)
@@ -202,41 +198,39 @@ def login_screen():
     if role == "Shopkeeper":
         pin = st.text_input("Enter PIN", type="password")
         if st.button("Login"):
-            # --- NEW: Check Database for Shopkeeper PIN ---
             cur = conn.cursor()
             cur.execute("SELECT password FROM users WHERE username='shopkeeper'")
             result = cur.fetchone()
             
-            # result[0] is the PIN stored in DB
             if result and result[0] == pin:
                 st.session_state['role'] = 'shopkeeper'
+                st.session_state['logged_in'] = True  # <--- FIXED: Set logged_in to True
                 st.rerun()
             else:
                 st.error("Invalid PIN")
     else:
-        # --- UPDATED ADMIN LOGIN ---
-        username = st.text_input("Username", value="admin") # Default to admin
+        username = st.text_input("Username", value="admin")
         pwd = st.text_input("Enter Password", type="password")
         
         if st.button("Login"):
-            # Check DB for user and password
             cur = conn.cursor()
             cur.execute("SELECT password FROM users WHERE username=?", (username,))
             result = cur.fetchone()
             
             if result and result[0] == pwd:
                 st.session_state['role'] = 'admin'
-                st.session_state['user'] = username # Remember who logged in
+                st.session_state['user'] = username
+                st.session_state['logged_in'] = True # <--- FIXED: Set logged_in to True
                 st.rerun()
             else:
                 st.error("Invalid Username or Password")
+
 # --- SHOPKEEPER VIEW (WIZARD) ---
 def shopkeeper_view():
     st.markdown("### 🏪 Daily Closing Entry")
     st.info("ℹ️ Workflow: Select a date, enter closing stock counts, review the totals, and submit to Admin.")
     
-    # 1. DATE SELECTION (Restricted to Today & Future)
-    # min_value=datetime.date.today() ensures they cannot edit past history.
+    # 1. DATE SELECTION
     date = st.date_input(
         "Select Date", 
         datetime.date.today(), 
@@ -255,7 +249,6 @@ def shopkeeper_view():
     if 'current_date' in st.session_state and st.session_state['current_date'] == date_str:
         df = get_inventory(date_str)
         
-        # Check Locked Status
         if not df.empty and df.iloc[0]['status'] == 2:
             st.warning(f"🔒 Data for {date_str} is APPROVED & LOCKED by Admin.")
             st.dataframe(df[['name', 'variant', 'closing', 'sold', 'revenue']])
@@ -265,7 +258,7 @@ def shopkeeper_view():
         tab_wiz, tab_import, tab_preview = st.tabs(["🧙‍♂️ Manual Wizard", "📂 Import Excel/CSV", "👀 Final Preview (Report)"])
 
         # ============================================================
-        # TAB 1: MANUAL WIZARD (Search, Prev/Next, Validation)
+        # TAB 1: MANUAL WIZARD
         # ============================================================
         with tab_wiz:
             st.markdown("""
@@ -276,7 +269,7 @@ def shopkeeper_view():
             """)
             st.divider()
             
-            brands = sorted(df['name'].unique()) # Sort alphabetically
+            brands = sorted(df['name'].unique())
             
             # Initialize Index
             if 'wiz_idx' not in st.session_state: st.session_state['wiz_idx'] = 0
@@ -290,7 +283,6 @@ def shopkeeper_view():
                 index=st.session_state['wiz_idx']
             )
             
-            # If user used the dropdown to change brand, update index and rerun
             if selected_brand != current_brand_name:
                 st.session_state['wiz_idx'] = list(brands).index(selected_brand)
                 st.rerun()
@@ -303,12 +295,10 @@ def shopkeeper_view():
             st.info(f"Brand {idx + 1} of {len(brands)}")
             st.markdown(f"## 🍾 {current_brand}")
             
-            # Check total stock for this brand
             total_brand_stock = (brand_rows['opening'] + brand_rows['receipts']).sum()
             
             if total_brand_stock == 0:
                 st.warning(f"⚠️ No stock available for {current_brand} (Opening + Receipts = 0).")
-                # Navigation buttons for empty brand
                 c1, c2 = st.columns([1, 1])
                 if c1.button("⬅️ Previous"):
                     if idx > 0:
@@ -323,7 +313,6 @@ def shopkeeper_view():
                     updates = {}
                     has_visible_variants = False
                     
-                    # Create input fields ONLY if stock > 0
                     for _, row in brand_rows.iterrows():
                         v = row['variant']
                         max_val = row['opening'] + row['receipts']
@@ -332,7 +321,6 @@ def shopkeeper_view():
                             has_visible_variants = True
                             st.markdown(f"**{v}** (Available: {max_val})")
                             
-                            # STRICT VALIDATION: max_value prevents invalid entry
                             closing = st.number_input(
                                 f"Closing Stock ({v})", 
                                 min_value=0, 
@@ -343,7 +331,6 @@ def shopkeeper_view():
                             )
                             updates[(row['brand_id'], v)] = closing
                         else:
-                            # Keep existing value (0) if hidden
                             updates[(row['brand_id'], v)] = row['closing']
 
                     if not has_visible_variants:
@@ -381,7 +368,7 @@ def shopkeeper_view():
                                 st.success("You have reached the last brand. Check Final Preview.")
 
         # ============================================================
-        # TAB 2: IMPORT EXCEL/CSV (Existing Logic)
+        # TAB 2: IMPORT EXCEL/CSV
         # ============================================================
         with tab_import:
             st.subheader("Import Closing Stock")
@@ -404,7 +391,6 @@ def shopkeeper_view():
                         data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                     
                     sheet_options = list(data_dict.keys())
-                    # Auto-select sheet based on date
                     default_idx = 0
                     for i, s_name in enumerate(sheet_options):
                         if date.strftime("%d") in s_name or date.strftime("%b") in s_name:
@@ -416,7 +402,6 @@ def shopkeeper_view():
                         df_imp = data_dict[selected_sheet]
                         df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                         
-                        # Map Columns
                         variant_map = {
                             "2l": "2L", "2000ml": "2L",
                             "1l": "1L", "1000ml": "1L", "full": "1L",
@@ -435,7 +420,6 @@ def shopkeeper_view():
                         if not found_maps:
                             st.error("❌ No size columns found.")
                         else:
-                            # Update DB
                             match_count = 0
                             db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
                             brand_map = {name.lower().strip(): bid for bid, name in zip(db_brands['id'], db_brands['name'])}
@@ -458,9 +442,6 @@ def shopkeeper_view():
                                         except:
                                             closing_qty = 0
                                         
-                                        # Only update if closing <= available (soft validation for import)
-                                        # We rely on Final Preview to catch hard errors, 
-                                        # but here we update blindly to allow corrections later.
                                         conn.execute("""
                                             UPDATE inventory 
                                             SET closing = ? 
@@ -475,24 +456,21 @@ def shopkeeper_view():
                     st.error(f"Import Error: {e}")
 
         # ============================================================
-        # TAB 3: FINAL PREVIEW (FIXED)
+        # TAB 3: FINAL PREVIEW
         # ============================================================
         with tab_preview:
             st.subheader("📊 Final Daily Report")
             
-            # 1. Prepare Data
             df['available'] = df['opening'] + df['receipts']
             df['sold'] = df['available'] - df['closing']
             df['item_revenue'] = df['sold'] * df['price']
             
-            # 2. Validation
             negatives = df[df['sold'] < 0]
             if not negatives.empty:
                 st.error("❌ ERROR: You have entered Closing Stock > Available Stock.")
                 st.dataframe(negatives[['name', 'variant', 'available', 'closing', 'sold']])
                 st.stop()
 
-            # 3. Create Pivot Tables
             variants_order = ["2L", "1L", "Q", "P", "N"]
             
             def make_pivot(val_col):
@@ -507,44 +485,22 @@ def shopkeeper_view():
             
             revenue_series = df.groupby('name')['item_revenue'].sum()
 
-            # 4. Create MultiIndex Headers
             p_open.columns = pd.MultiIndex.from_product([['Opening (Inc Rcpt)'], p_open.columns])
             p_close.columns = pd.MultiIndex.from_product([['Closing Stock'], p_close.columns])
             p_sold.columns = pd.MultiIndex.from_product([['Sales'], p_sold.columns])
 
-            # 5. Combine
             final_df = pd.concat([p_open, p_close, p_sold], axis=1)
             final_df[('Sales', 'Revenue (₹)')] = revenue_series
             final_df = final_df.fillna(0)
 
-            # --- THE FIX: FLATTEN COLUMNS FOR DISPLAY ---
-            # Streamlit cannot handle Tuple keys in column_config (e.g. ('Sales', 'Revenue')).
-            # We convert columns to simple strings just for the display dataframe.
-            
-            # 1. Create a display copy
             display_df = final_df.copy()
-            
-            # 2. Flatten headers: "Sales" + "Revenue" -> "Sales_Revenue"
-            # This makes the dataframe safe for Streamlit to render
             display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
 
-            # 3. Rename the specific revenue column to something clean for config
-            # It will now look like "Sales_Revenue (₹)"
+            st.dataframe(final_df, use_container_width=True, height=600)
             
-            # 6. Display
-            st.dataframe(
-                final_df, # We pass the original MultiIndex DF, Streamlit handles the visual
-                use_container_width=True, 
-                height=600,
-                # REMOVED column_config mapping for the Tuple key to prevent the crash.
-                # If you need specific formatting, we apply it to the flattened version or rely on defaults.
-            )
-            
-            # 7. Total Summary Metrics
             total_rev = df['item_revenue'].sum()
             st.metric("💰 Total Shop Revenue", f"₹ {total_rev:,.2f}")
             
-            # 8. Submit
             if st.button("✅ Submit Final Report to Admin", type="primary"):
                 conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date_str,))
                 conn.commit()
@@ -556,11 +512,10 @@ def admin_view():
     st.sidebar.title("Admin Menu")
     menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
     
-    # --- 1. DASHBOARD (With Totals Row) ---
+    # --- 1. DASHBOARD ---
     if menu == "Dashboard":
         st.header("📊 Sales Dashboard")
         
-        # --- A. Date Range Selection ---
         st.subheader("📅 Download Reports")
         col_d1, col_d2 = st.columns(2)
         with col_d1:
@@ -571,15 +526,12 @@ def admin_view():
         if start_date > end_date:
             st.error("Error: 'From Date' must be before 'To Date'.")
         else:
-            # Generate the Date List
             delta = end_date - start_date
             date_list = [start_date + datetime.timedelta(days=i) for i in range(delta.days + 1)]
             
             st.info(f"Selected Range: {len(date_list)} days")
 
-            # --- B. Helper Function (Calculates Data + Totals) ---
             def get_formatted_daily_df(target_date_str):
-                # 1. Fetch Data
                 query = """
                     SELECT b.name, i.variant, i.opening, i.receipts, i.closing, p.price
                     FROM inventory i
@@ -589,15 +541,12 @@ def admin_view():
                 """
                 df = pd.read_sql(query, conn, params=(target_date_str,))
                 
-                if df.empty:
-                    return None
+                if df.empty: return None
                 
-                # 2. Calculations
                 df['available'] = df['opening'] + df['receipts']
                 df['sold'] = df['available'] - df['closing']
                 df['revenue'] = df['sold'] * df['price']
                 
-                # 3. Pivot Tables
                 variants_order = ["2L", "1L", "Q", "P", "N"]
                 
                 def make_pivot(val_col):
@@ -612,27 +561,20 @@ def admin_view():
                 
                 rev_series = df.groupby('name')['revenue'].sum()
                 
-                # 4. Multi-Index Headers
                 p_open.columns = pd.MultiIndex.from_product([['1. Opening (Inc. Rcpts)'], p_open.columns])
                 p_close.columns = pd.MultiIndex.from_product([['2. Closing Stock'], p_close.columns])
                 p_sold.columns = pd.MultiIndex.from_product([['3. Sales Units'], p_sold.columns])
                 
-                # 5. Combine
                 final_df = pd.concat([p_open, p_close, p_sold], axis=1)
                 
-                # Add Revenue Column
                 final_df[('3. Sales Units', 'Total Revenue (₹)')] = rev_series
                 final_df = final_df.fillna(0)
                 
-                # --- 6. ADD TOTALS ROW (New Feature) ---
-                # Calculate sum of all numeric columns
                 totals = final_df.sum(numeric_only=True)
-                # Assign to a new row named 'TOTAL'
                 final_df.loc['TOTAL'] = totals
                 
                 return final_df
 
-            # --- C. Generate Excel ---
             if st.button("📥 Generate Multi-Sheet Excel Report"):
                 import io
                 output = io.BytesIO()
@@ -670,21 +612,15 @@ def admin_view():
 
         st.divider()
         
-        # --- D. Visuals (Quick Look) ---
         st.subheader("📈 Quick Look: Today's Stats")
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         today_df = get_formatted_daily_df(today_str)
         
         if today_df is not None:
-            # Flatten columns for screen display
             display_df = today_df.copy()
             display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
-            
-            # Highlight the TOTAL row in the UI
             st.dataframe(display_df, height=400, use_container_width=True)
             
-            # Extract just the revenue number for the metric card
-            # We access the 'TOTAL' row and the specific revenue column
             total_rev = today_df.loc['TOTAL', ('3. Sales Units', 'Total Revenue (₹)')]
             st.metric("Today's Total Revenue", f"₹ {total_rev:,.2f}")
         else:
@@ -694,43 +630,35 @@ def admin_view():
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
         
-        # Select Date
         date_in = st.date_input("Date of Receipt", datetime.date.today())
         date_str = date_in.strftime("%Y-%m-%d")
         
-        # Initialize Day Button
         if st.button("Load / Refresh Inventory for Date"):
             initialize_day(date_str)
             st.session_state['stock_date'] = date_str
             st.success(f"Inventory initialized for {date_str}")
             st.rerun()
 
-        # HELPER FUNCTION: Safe Save (Update if exists, Insert if new)
         def safe_save_receipt(date_val, bid, var, qty):
-            # 1. Try UPDATE
             cur = conn.execute("""
                 UPDATE inventory 
                 SET receipts = receipts + ? 
                 WHERE date = ? AND brand_id = ? AND variant = ?
             """, (qty, date_val, bid, var))
             
-            # 2. If UPDATE failed (row didn't exist), force INSERT
             if cur.rowcount == 0:
                 conn.execute("""
                     INSERT INTO inventory (date, brand_id, variant, opening, receipts, closing, status)
                     VALUES (?, ?, ?, 0, ?, 0, 0)
                 """, (date_val, bid, var, qty))
-                return 1 # Created new
-            return 1 # Updated existing
+                return 1 
+            return 1 
 
         if 'stock_date' in st.session_state and st.session_state['stock_date'] == date_str:
             
-            # --- TABS ---
             tab_manual, tab_excel, tab_pdf = st.tabs(["✋ Manual Entry", "📂 Import Excel", "📄 Import PDF"])
             
-            # ========================================================
-            # TAB 1: MANUAL ENTRY (Updated with Safe Save)
-            # ========================================================
+            # TAB 1: MANUAL ENTRY
             with tab_manual:
                 st.info(f"Adding stock manually for: {date_str}")
                 brands_df = get_brands()
@@ -738,9 +666,8 @@ def admin_view():
                 
                 if brand_sel:
                     bid = brands_df[brands_df['name'] == brand_sel].iloc[0]['id']
-                    # Get current receipts just for display
                     cur_rows = pd.read_sql("SELECT variant, receipts FROM inventory WHERE date=? AND brand_id=?", 
-                                           conn, params=(date_str, bid))
+                                            conn, params=(date_str, bid))
                     
                     with st.form("receipt_form"):
                         st.subheader(f"Enter Quantities for {brand_sel}")
@@ -752,21 +679,13 @@ def admin_view():
                             current_qty = 0 if row.empty else row.iloc[0]['receipts']
                             with cols[i]:
                                 new_qty = st.number_input(f"{v_name}", min_value=0, value=current_qty, key=f"rec_{bid}_{v_name}")
-                                # We only want to ADD the difference, or just Overwrite? 
-                                # Standard logic: The user types the TOTAL receipts for the day.
-                                # So we calculate the difference or just set it. 
-                                # Simpler for Manual: SET exact value.
                                 input_vals[v_name] = new_qty
                         
                         if st.form_submit_button("💾 Save Receipts"):
-                            # For manual, we want to SET the value, not add to it.
-                            # So we use a slightly different query than the helper, or just use helper with diff?
-                            # Let's use direct SQL for "SET" logic to match user expectation (Total = Input).
                             for v, qty in input_vals.items():
                                 cur = conn.execute("UPDATE inventory SET receipts=? WHERE date=? AND brand_id=? AND variant=?",
-                                             (qty, date_str, bid, v))
+                                                     (qty, date_str, bid, v))
                                 if cur.rowcount == 0:
-                                    # Fallback if row missing
                                     conn.execute("""
                                         INSERT INTO inventory (date, brand_id, variant, opening, receipts, closing, status)
                                         VALUES (?, ?, ?, 0, ?, 0, 0)
@@ -775,9 +694,7 @@ def admin_view():
                             st.success(f"Updated stock receipts for {brand_sel}!")
                             st.rerun()
 
-            # ========================================================
-            # TAB 2: EXCEL IMPORT (Updated with Safe Save)
-            # ========================================================
+            # TAB 2: EXCEL IMPORT
             with tab_excel:
                 st.subheader("📂 Bulk Import Receipts")
                 uploaded_file = st.file_uploader("Upload Excel/CSV", type=["xlsx", "xls", "csv"], key="rec_excel")
@@ -785,14 +702,12 @@ def admin_view():
                 if uploaded_file:
                     if st.button("🚀 Process Import"):
                         try:
-                            # Parse File
                             file_ext = uploaded_file.name.split('.')[-1].lower()
                             if file_ext == 'csv': df_imp = pd.read_csv(uploaded_file)
-                            else: df_imp = pd.read_excel(uploaded_file) # Reads first sheet by default
+                            else: df_imp = pd.read_excel(uploaded_file)
                             
                             df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                             
-                            # Map Columns
                             variant_map = {
                                 "2l": "2L", "1l": "1L", "q": "Q", "750ml": "Q", 
                                 "p": "P", "375ml": "P", "n": "N", "180ml": "N"
@@ -802,11 +717,9 @@ def admin_view():
                             if not found_maps:
                                 st.error("❌ No size columns found.")
                             else:
-                                # Map Brands
                                 db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
                                 brand_map = {name.lower().strip(): bid for bid, name in zip(db_brands['id'], db_brands['name'])}
                                 
-                                # Find Brand Column
                                 brand_col = df_imp.columns[0]
                                 for c in df_imp.columns:
                                     if 'brand' in c or 'name' in c: brand_col = c; break
@@ -820,7 +733,6 @@ def admin_view():
                                             try: qty = int(float(row[col]))
                                             except: qty = 0
                                             if qty > 0:
-                                                # USE SAFE SAVE (Add to existing)
                                                 safe_save_receipt(date_str, bid, var, qty)
                                         count += 1
                                 conn.commit()
@@ -829,9 +741,7 @@ def admin_view():
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-            # ========================================================
-            # TAB 3: PDF IMPORT (Keep Fixed Version)
-            # ========================================================
+            # TAB 3: PDF IMPORT
             with tab_pdf:
                 st.subheader("📄 Import from PDF")
                 uploaded_pdf = st.file_uploader("Upload Receipt PDF", type=["pdf"], key="pdf_upload")
@@ -862,7 +772,6 @@ def admin_view():
                         update_count = 0
                         df_save = st.session_state['pdf_data']
                         for _, row in df_save.iterrows():
-                            # USE SAFE SAVE
                             safe_save_receipt(date_str, row['brand_id'], row['variant'], row['qty'])
                             update_count += 1
                         
@@ -872,7 +781,6 @@ def admin_view():
                         st.success(f"Saved {update_count} items!")
                         st.rerun()
 
-            # --- SUMMARY ---
             st.divider()
             st.markdown("### 📊 Today's Total Receipts")
             daily_rec = pd.read_sql("""
@@ -887,29 +795,25 @@ def admin_view():
             else:
                 st.caption("No stock receipts recorded yet for this date.")
 
-    # --- 3. BRAND MANAGER (CLEAN UI & STRICT DEFAULTS) ---
+    # --- 3. BRAND MANAGER ---
     elif menu == "Brand Manager":
         st.header("🏷️ Manage Brands & Prices")
         st.markdown("""
         **Purpose:** Add new brands or update selling prices.
-        * **Duplicate Protection:** Ignores spaces and capitalization (e.g., "100pipers" matches "100 Pipers").
+        * **Duplicate Protection:** Ignores spaces and capitalization.
         """)
         
-        # --- A. ADD NEW BRAND ---
         with st.expander("➕ Add New Brand Manually"):
             new_brand_raw = st.text_input("New Brand Name")
             
             if st.button("Add Brand"):
                 if new_brand_raw:
-                    # 1. Normalize Name
                     clean_name = " ".join(new_brand_raw.split()).title()
                     search_key = clean_name.lower().replace(" ", "")
                     
-                    # 2. Check Duplicates
                     existing = pd.read_sql(
                         "SELECT name FROM brands WHERE LOWER(REPLACE(name, ' ', '')) = ?", 
-                        conn, 
-                        params=(search_key,)
+                        conn, params=(search_key,)
                     )
                     
                     if not existing.empty:
@@ -919,8 +823,6 @@ def admin_view():
                         try:
                             conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
                             bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
-                            
-                            # 3. Create Default Prices (STRICTLY 0.0)
                             for v in VARIANTS:
                                 conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
                             conn.commit()
@@ -931,37 +833,24 @@ def admin_view():
 
         st.divider()
 
-        # --- B. EDIT PRICES (Clean Dropdown) ---
         st.subheader("Edit Prices")
-        
-        # 1. Get Brands
         brands_df = pd.read_sql("SELECT id, name FROM brands ORDER BY name", conn)
         
         if not brands_df.empty:
-            # 2. Create Dictionary for Lookup {Name: ID}
-            # This hides the ID from the user but keeps it for the system.
-            # If duplicates exist in DB, this picks the last one (cleaning up the list).
             brand_map = {row['name']: row['id'] for _, row in brands_df.iterrows()}
-            
-            # 3. Show ONLY Names in Dropdown
             sel_brand_name = st.selectbox("Select Brand to Edit", list(brand_map.keys()))
             
             if sel_brand_name:
-                # Retrieve ID hidden in the map
                 bid = brand_map[sel_brand_name]
-                
-                # 4. Auto-Repair Missing Prices (Ensure they are 0.0)
                 existing_prices = pd.read_sql("SELECT variant FROM prices WHERE brand_id=?", conn, params=(bid,))
                 existing_vars = existing_prices['variant'].tolist()
                 missing_vars = [v for v in VARIANTS if v not in existing_vars]
                 
                 if missing_vars:
                     for v in missing_vars:
-                        # Force 0.0 default
                         conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
                     conn.commit()
                 
-                # 5. Fetch Current Prices
                 prices_df = pd.read_sql("SELECT * FROM prices WHERE brand_id=?", conn, params=(bid,))
                 
                 with st.form("price_edit_form"):
@@ -971,22 +860,15 @@ def admin_view():
                     
                     for i, v_name in enumerate(VARIANTS):
                         row = prices_df[prices_df['variant'] == v_name]
-                        
-                        # 6. Strict Default Value Logic
                         current_val = 0.0
                         if not row.empty:
                             db_val = row.iloc[0]['price']
-                            # Ensure it's a valid float; if None/Null, use 0.0
                             if db_val is not None:
                                 current_val = float(db_val)
                         
                         with cols[i]:
                             new_val = st.number_input(
-                                f"{v_name}", 
-                                value=current_val, 
-                                min_value=0.0, 
-                                step=10.0, 
-                                # Key includes BID to prevent "ghost" values from previous brands
+                                f"{v_name}", value=current_val, min_value=0.0, step=10.0, 
                                 key=f"p_{bid}_{v_name}" 
                             )
                             input_values[v_name] = new_val
@@ -1001,57 +883,42 @@ def admin_view():
                         st.rerun()
         else:
             st.info("No brands found.")
-    # --- 4. IMPORT EXCEL (FIXED: ALLOW 0 PRICE UPDATES) ---
-    # --- 4. IMPORT EXCEL (SMART MATCHING & NO HARDCODED LIST) ---
+
+    # --- 4. IMPORT EXCEL ---
     elif menu == "Import Excel":
         st.header("📥 Import Master Price List")
         st.markdown("""
         **Purpose:** Upload your full brand list here to populate the system.
-        
-        ### 🧠 Smart Features
-        * **Duplicate Protection:** Ignores spaces/case (e.g., "royal stag" = "Royal Stag").
+        * **Duplicate Protection:** Ignores spaces/case.
         * **Typo Detection:** Fixes small errors (e.g., "Blac Dog" -> "Black Dog").
-        * **Price Rules:** * Type `0` to set price to zero.
-            * Leave **Blank** to keep existing price.
+        * **Price Rules:** Type `0` to set price to zero. Leave **Blank** to keep existing.
         """)
         
         uploaded_file = st.file_uploader("Upload Price List", type=["xlsx", "xls", "csv"])
         
         if uploaded_file:
             if st.button("🚀 Process Import"):
-                import difflib  # Built-in library for fuzzy matching
-
                 try:
-                    # 1. Parse File
                     file_ext = uploaded_file.name.split('.')[-1].lower()
                     data_dict = {}
                     if file_ext == 'csv': data_dict['Default'] = pd.read_csv(uploaded_file)
                     else: data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                     
-                    # 2. Load Existing Brands for Matching
                     existing_brands = pd.read_sql("SELECT id, name FROM brands", conn)
-                    
-                    # Map 1: Strict Normalized Key ("100pipers" -> ID)
                     brand_map_strict = {
                         str(row['name']).lower().replace(" ", ""): row['id'] 
                         for _, row in existing_brands.iterrows()
                     }
-                    
-                    # Map 2: List of clean names for Fuzzy Matching
                     existing_names_list = existing_brands['name'].tolist()
                     
                     total_brands_touched = 0
                     total_prices_updated = 0
                     typos_fixed = 0
                     
-                    # 3. Process Sheets
                     for sheet_name, df_imp in data_dict.items():
                         if df_imp.empty: continue
-                        
-                        # Clean Headers
                         df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
                         
-                        # Identify Variant Columns
                         variant_map = {
                             "2l": "2L", "1l": "1L", "q": "Q", "750ml": "Q", 
                             "p": "P", "375ml": "P", "n": "N", "180ml": "N"
@@ -1062,10 +929,8 @@ def admin_view():
                                 if key in col:
                                     found_maps[col] = sys_var
                                     break
-                        
                         if not found_maps: continue
                         
-                        # Identify Brand Column
                         brand_col = df_imp.columns[0]
                         for c in df_imp.columns:
                             if 'brand' in c or 'name' in c: brand_col = c; break
@@ -1076,44 +941,28 @@ def admin_view():
                             raw_brand = str(row[brand_col]).strip()
                             if not raw_brand or raw_brand.lower() == 'nan': continue
                             
-                            # --- STEP A: RESOLVE BRAND ID ---
                             bid = None
-                            
-                            # 1. Try Strict Match (Ignore Case/Space)
                             strict_key = raw_brand.lower().replace(" ", "")
                             if strict_key in brand_map_strict:
                                 bid = brand_map_strict[strict_key]
                             else:
-                                # 2. Try Fuzzy Match (Typo Detection)
-                                # cutoff=0.85 means names must be 85% similar
                                 matches = difflib.get_close_matches(raw_brand, existing_names_list, n=1, cutoff=0.85)
-                                
                                 if matches:
-                                    # Found a close match! Use existing ID.
                                     matched_name = matches[0]
                                     matched_key = matched_name.lower().replace(" ", "")
                                     bid = brand_map_strict.get(matched_key)
-                                    
-                                    # (Optional) Notify user in logs
-                                    # st.toast(f"Typo Fixed: '{raw_brand}' mapped to '{matched_name}'")
                                     typos_fixed += 1
                                 else:
-                                    # 3. Truly New Brand -> Create It
                                     clean_name = " ".join(raw_brand.split()).title()
                                     conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
                                     bid = conn.cursor().execute("SELECT last_insert_rowid()").fetchone()[0]
-                                    
-                                    # Add to maps immediately to catch duplicates in same file
                                     brand_map_strict[clean_name.lower().replace(" ", "")] = bid
                                     existing_names_list.append(clean_name)
-                                    
-                                    # Init empty prices
                                     for v in VARIANTS:
                                         conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
 
                             total_brands_touched += 1
 
-                            # --- STEP B: UPDATE PRICES ---
                             for col_name, sys_var in found_maps.items():
                                 val = row[col_name]
                                 try:
@@ -1121,30 +970,24 @@ def admin_view():
                                     price_val = float(val)
                                     if price_val >= 0:
                                         conn.execute("""
-                                            UPDATE prices 
-                                            SET price = ? 
+                                            UPDATE prices SET price = ? 
                                             WHERE brand_id = ? AND variant = ?
                                         """, (price_val, bid, sys_var))
                                         total_prices_updated += 1
-                                except:
-                                    continue
+                                except: continue
                                     
                     conn.commit()
-                    
                     msg = f"✅ Import Complete!\n• Brands Processed: {total_brands_touched}\n• Prices Updated: {total_prices_updated}"
-                    if typos_fixed > 0:
-                        msg += f"\n• 🪄 Auto-corrected {typos_fixed} typos."
-                    
+                    if typos_fixed > 0: msg += f"\n• 🪄 Auto-corrected {typos_fixed} typos."
                     st.success(msg)
                     st.balloons()
-                        
                 except Exception as e:
                     st.error(f"Import Failed: {e}")
+
     # --- 5. SETTINGS ---
     elif menu == "Settings":
         st.header("⚙️ Admin Settings")
         
-        # --- A. Change Password ---
         with st.expander("👤 Change Admin Password", expanded=False):
             with st.form("change_pass_form"):
                 current_user = st.session_state.get('user', 'admin')
@@ -1154,12 +997,10 @@ def admin_view():
                     conn.commit()
                     st.success("Admin password updated.")
 
-        # --- B. Shopkeeper PIN ---
         st.subheader("🏪 Shopkeeper Access")
         with st.form("change_pin_form"):
             st.write("Update the PIN used by shopkeepers on the main login screen.")
             new_pin = st.text_input("New Shopkeeper PIN", max_chars=6)
-            
             if st.form_submit_button("Update PIN"):
                 if len(new_pin) > 0:
                     try:
@@ -1172,10 +1013,7 @@ def admin_view():
                     st.error("PIN cannot be empty.")
 
         st.divider()
-
-        # --- C. Database Backup ---
         st.subheader("💾 System Backup")
-        st.markdown("Download a copy of the entire database to keep your data safe.")
         try:
             with open("wineshop.db", "rb") as f:
                 db_bytes = f.read()
@@ -1189,11 +1027,8 @@ def admin_view():
             st.error(f"Could not read database file: {e}")
 
         st.divider()
-
-        # --- D. DANGER ZONE ---
         st.subheader("⚠️ Danger Zone")
         
-        # 1. RESET INVENTORY (Existing)
         with st.expander("🔥 Clear Inventory History (Keep Brands)", expanded=True):
             st.markdown("""
             **Action:** Deletes all daily counts (Opening, Closing, Sold).
@@ -1212,20 +1047,16 @@ def admin_view():
                     else:
                         st.warning("Please check the confirmation box.")
 
-        # 2. RESET BRANDS & PRICES (New)
         with st.expander("💀 Delete All Brands & Prices (Full Reset)", expanded=False):
             st.markdown("""
             **Action:** Deletes ALL Brand Names and their Prices.
-            **Warning:** This will corrupt any existing inventory history if you don't clear it first.
             **Result:** The system will be completely empty (no products).
             """)
             with st.form("reset_brands_form"):
                 confirm_brand = st.checkbox("I confirm I want to delete ALL BRANDS and PRICES.")
-                
                 if st.form_submit_button("Delete Brands & Prices"):
                     if confirm_brand:
                         try:
-                            # It is safest to clear inventory first to avoid orphaned data
                             conn.execute("DELETE FROM inventory") 
                             conn.execute("DELETE FROM prices")
                             conn.execute("DELETE FROM brands")
@@ -1236,6 +1067,7 @@ def admin_view():
                             st.error(f"Error deleting brands: {e}")
                     else:
                         st.warning("Please check the confirmation box.")
+
 # --- MAIN APP LOGIC ---
 if __name__ == "__main__":
     if 'logged_in' not in st.session_state:
