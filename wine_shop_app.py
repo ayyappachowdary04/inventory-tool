@@ -905,13 +905,43 @@ def admin_view():
                     st.caption("Prices are in Rupees (₹). Set to 0 if not sold.")
                     
                     if st.form_submit_button("💾 Save Updated Prices"):
-                        for var, price in input_values.items():
-                            conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (price, bid, var))
+                        # Get current timestamp in IST
+                        now_str = datetime.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        for var, new_price in input_values.items():
+                            # 1. Fetch current (old) price
+                            cur = conn.execute("SELECT price FROM prices WHERE brand_id=? AND variant=?", (bid, var))
+                            res = cur.fetchone()
+                            old_price = res[0] if (res and res[0] is not None) else 0.0
+                            
+                            # 2. Compare and Log if Changed
+                            if new_price != old_price:
+                                conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (new_price, bid, var))
+                                conn.execute("INSERT INTO price_audit (timestamp, brand_id, variant, old_price, new_price) VALUES (?, ?, ?, ?, ?)",
+                                             (now_str, bid, var, old_price, new_price))
+                                
                         conn.commit()
                         st.success(f"✅ Prices updated for {sel_brand_name}!")
                         st.rerun()
+                        
         else:
             st.info("No brands found.")
+
+        # --- NEW: SHOW AUDIT HISTORY IN UI ---
+        st.divider()
+        st.subheader("📜 Price Change History")
+        history_df = pd.read_sql("""
+            SELECT pa.timestamp as "Date & Time", b.name as "Brand", pa.variant as "Size", 
+                   pa.old_price as "Old Price (₹)", pa.new_price as "New Price (₹)"
+            FROM price_audit pa 
+            JOIN brands b ON pa.brand_id = b.id 
+            ORDER BY pa.timestamp DESC LIMIT 50
+        """, conn)
+        
+        if not history_df.empty:
+            st.dataframe(history_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No price changes recorded yet.")
 
     # --- 4. IMPORT EXCEL ---
     elif menu == "Import Excel":
