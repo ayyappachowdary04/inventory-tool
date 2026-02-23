@@ -652,9 +652,111 @@ def admin_view():
             st.metric("Today's Total Revenue", f"₹ {total_rev:,.2f}")
         else:
             st.info("No data available for today yet.")
+    
+    # --- APPROVALS SECTION ---
+    elif menu == "✅ Approvals":
+        st.header("✅ Daily Report Approvals")
+        st.markdown("Review and lock daily closing reports submitted by shopkeepers.")
+
+        # 1. Fetch dates that are pending approval (status = 1)
+        pending_dates_df = pd.read_sql("""
+            SELECT DISTINCT date 
+            FROM inventory 
+            WHERE status = 1 
+            ORDER BY date DESC
+        """, conn)
+
+        if pending_dates_df.empty:
+            st.success("🎉 All caught up! No reports are currently pending approval.")
+            st.balloons()
+        else:
+            pending_dates = pending_dates_df['date'].tolist()
+            selected_date = st.selectbox("📅 Select a Date to Review", pending_dates)
+
+            if selected_date:
+                st.subheader(f"Reviewing Report for: {selected_date}")
+                
+                # 2. Re-use the smart Dashboard logic to get the formatted report 
+                # (Includes Time-Travel Price Audit)
+                def get_approval_df(target_date_str):
+                    query = """
+                        SELECT b.name, i.variant, i.opening, i.receipts, i.closing, 
+                               COALESCE(
+                                   (SELECT old_price FROM price_audit 
+                                    WHERE brand_id = i.brand_id AND variant = i.variant AND timestamp > ? || ' 23:59:59'
+                                    ORDER BY timestamp ASC LIMIT 1),
+                                   p.price
+                               ) as price
+                        FROM inventory i
+                        JOIN brands b ON i.brand_id = b.id
+                        LEFT JOIN prices p ON i.brand_id = p.brand_id AND i.variant = p.variant
+                        WHERE i.date = ?
+                    """
+                    df = pd.read_sql(query, conn, params=(target_date_str, target_date_str))
+                    
+                    if df.empty: return None, 0
+                    
+                    df['available'] = df['opening'] + df['receipts']
+                    df['sold'] = df['available'] - df['closing']
+                    df['revenue'] = df['sold'] * df['price']
+                    
+                    variants_order = ["2L", "1L", "Q", "P", "N"]
+                    def make_pivot(val_col):
+                        p = df.pivot_table(index='name', columns='variant', values=val_col, aggfunc='sum').fillna(0)
+                        for v in variants_order:
+                            if v not in p.columns: p[v] = 0
+                        return p[variants_order]
+
+                    p_open = make_pivot('available')
+                    p_close = make_pivot('closing')
+                    p_sold = make_pivot('sold')
+                    rev_series = df.groupby('name')['revenue'].sum()
+                    
+                    p_open.columns = pd.MultiIndex.from_product([['1. Opening (Inc. Rcpts)'], p_open.columns])
+                    p_close.columns = pd.MultiIndex.from_product([['2. Closing Stock'], p_close.columns])
+                    p_sold.columns = pd.MultiIndex.from_product([['3. Sales Units'], p_sold.columns])
+                    
+                    final_df = pd.concat([p_open, p_close, p_sold], axis=1)
+                    final_df[('3. Sales Units', 'Total Revenue (₹)')] = rev_series
+                    final_df = final_df.fillna(0)
+                    
+                    totals = final_df.sum(numeric_only=True)
+                    final_df.loc['TOTAL'] = totals
+                    
+                    total_rev = totals[('3. Sales Units', 'Total Revenue (₹)')]
+                    return final_df, total_rev
+
+                # 3. Display the Data
+                report_df, total_revenue = get_approval_df(selected_date)
+
+                if report_df is not None:
+                    # Flatten headers for screen display
+                    display_df = report_df.copy()
+                    display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
+                    st.dataframe(display_df, height=500, use_container_width=True)
+                    
+                    st.divider()
+                    
+                    # 4. Action Buttons
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    
+                    col1.metric("💰 Reported Total Revenue", f"₹ {total_revenue:,.2f}")
+                    
+                    # If Admin rejects, it gets pushed back to Draft (0)
+                    if col2.button("❌ Reject (Send back to Shopkeeper)"):
+                        conn.execute("UPDATE inventory SET status=0 WHERE date=?", (selected_date,))
+                        conn.commit()
+                        st.warning(f"Report for {selected_date} rejected. Shopkeeper can now edit it again.")
+                        st.rerun()
+                        
+                    # If Admin approves, it gets Locked (2)
+                    if col3.button("🔒 Approve & Lock Report", type="primary"):
+                        conn.execute("UPDATE inventory SET status=2 WHERE date=?", (selected_date,))
+                        conn.commit()
+                        st.success(f"Report for {selected_date} has been Approved and Locked!")
+                        st.rerun()
             
-    # --- 2. STOCK INTAKE (RECEIPTS) ---
-    # --- 2. STOCK INTAKE (RECEIPTS) ---
+    # --- 3. STOCK INTAKE (RECEIPTS) ---
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
         
@@ -834,7 +936,7 @@ def admin_view():
             else:
                 st.caption("No stock receipts recorded yet for this date.")
 
-    # --- 3. BRAND MANAGER ---
+    # --- 4. BRAND MANAGER ---
     elif menu == "Brand Manager":
         st.header("🏷️ Manage Brands & Prices")
         st.markdown("""
@@ -950,7 +1052,7 @@ def admin_view():
         else:
             st.info("No price changes recorded yet.")
 
-    # --- 4. LOAD BRAND LIST ---
+    # --- 5. LOAD BRAND LIST ---
     elif menu == "Load Brand list":
         st.header("📥 Load Brand list")
         st.markdown("""
@@ -1062,7 +1164,7 @@ def admin_view():
                 except Exception as e:
                     st.error(f"Import Failed: {e}")
 
-    # --- 5. SETTINGS ---
+    # --- 6. SETTINGS ---
     elif menu == "Settings":
         st.header("⚙️ Admin Settings")
         
