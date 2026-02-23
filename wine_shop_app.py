@@ -636,22 +636,68 @@ def admin_view():
                     st.warning("⚠️ No data found for selected range.")
 
         st.divider()
-        st.subheader("📈 Quick Look: Today's Stats")
+        st.subheader("📈 Quick Look")
         
-        # IST DATE USED HERE FOR "TODAY'S STATS"
-        today_str = get_india_date().strftime("%Y-%m-%d")
+        # --- TABS FOR QUICK LOOK ---
+        quick_tab1, quick_tab2 = st.tabs(["📅 Today's Stats", "📊 7-Day Sales History"])
         
-        today_df = get_formatted_daily_df(today_str)
-        
-        if today_df is not None:
-            display_df = today_df.copy()
-            display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
-            st.dataframe(display_df, height=400, use_container_width=True)
+        # TAB 1: TODAY'S GRID
+        with quick_tab1:
+            today_str = get_india_date().strftime("%Y-%m-%d")
+            today_df = get_formatted_daily_df(today_str)
             
-            total_rev = today_df.loc['TOTAL', ('3. Sales Units', 'Total Revenue (₹)')]
-            st.metric("Today's Total Revenue", f"₹ {total_rev:,.2f}")
-        else:
-            st.info("No data available for today yet.")
+            if today_df is not None:
+                display_df = today_df.copy()
+                display_df.columns = ['_'.join(col).strip() for col in display_df.columns.values]
+                st.dataframe(display_df, height=400, use_container_width=True)
+                
+                total_rev = today_df.loc['TOTAL', ('3. Sales Units', 'Total Revenue (₹)')]
+                st.metric("Today's Total Revenue", f"₹ {total_rev:,.2f}")
+            else:
+                st.info("No data available for today yet.")
+
+        # TAB 2: 7-DAY TREND CHART
+        with quick_tab2:
+            end_d = get_india_date()
+            start_d = end_d - datetime.timedelta(days=6)
+            
+            # Fetch 7 days of raw data using the Time-Travel SQL logic
+            trend_query = """
+                SELECT i.date, 
+                       ((i.opening + i.receipts) - i.closing) as sold,
+                       COALESCE(
+                           (SELECT old_price FROM price_audit 
+                            WHERE brand_id = i.brand_id AND variant = i.variant AND timestamp > i.date || ' 23:59:59'
+                            ORDER BY timestamp ASC LIMIT 1),
+                           p.price
+                       ) as price
+                FROM inventory i
+                JOIN brands b ON i.brand_id = b.id
+                LEFT JOIN prices p ON i.brand_id = p.brand_id AND i.variant = p.variant
+                WHERE i.date >= ? AND i.date <= ?
+            """
+            trend_df = pd.read_sql(trend_query, conn, params=(start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d")))
+            
+            if not trend_df.empty:
+                # Calculate Revenue
+                trend_df['revenue'] = trend_df['sold'] * trend_df['price']
+                
+                # Group by Date
+                daily_trend = trend_df.groupby('date')['revenue'].sum().reset_index()
+                daily_trend.columns = ['Date', 'Revenue (₹)']
+                
+                # 1. Show Total 7-Day Metric
+                total_7d_rev = daily_trend['Revenue (₹)'].sum()
+                st.metric(f"Total Revenue ({start_d.strftime('%b %d')} - {end_d.strftime('%b %d')})", f"₹ {total_7d_rev:,.2f}")
+                
+                # 2. Show Bar Chart natively
+                st.bar_chart(data=daily_trend.set_index('Date'), y='Revenue (₹)', use_container_width=True)
+                
+                # 3. Show raw table breakdown
+                with st.expander("View Daily Breakdown Table"):
+                    st.dataframe(daily_trend, use_container_width=True, hide_index=True)
+            else:
+                st.info("No sales data recorded in the last 7 days.")
     
     # --- APPROVALS SECTION ---
     elif menu == "✅ Approvals":
