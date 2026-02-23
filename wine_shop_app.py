@@ -528,7 +528,7 @@ def admin_view():
         st.rerun()
         
     st.sidebar.divider()
-    menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Load Brand list", "Settings"])
+    menu = st.sidebar.radio("Go to", ["Dashboard", "✅ Approvals", "🚚 Stock Intake", "Brand Manager", "Load Brand list", "Settings"])
     
     # --- 1. DASHBOARD ---
     if menu == "Dashboard":
