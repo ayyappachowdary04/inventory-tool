@@ -945,7 +945,7 @@ def admin_view():
 
     # --- 4. IMPORT EXCEL ---
     # --- 4. IMPORT EXCEL ---
-    elif menu == "Import Excel":
+    elif menu == "Load Brand list":
         st.header("📥 Load Brand list")
         st.markdown("""
         **Purpose:** Upload your full brand list here to populate the system.
