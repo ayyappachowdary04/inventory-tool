@@ -36,6 +36,13 @@ def get_db_connection():
                  (date TEXT, brand_id INTEGER, variant TEXT, 
                   opening INTEGER, receipts INTEGER, closing INTEGER, 
                   status INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS price_audit 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  timestamp TEXT, 
+                  brand_id INTEGER, 
+                  variant TEXT, 
+                  old_price REAL, 
+                  new_price REAL)''')
     
     # 4. Create Default Users
     c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', 'admin123', 'admin')")
