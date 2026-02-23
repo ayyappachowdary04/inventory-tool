@@ -528,7 +528,7 @@ def admin_view():
         st.rerun()
         
     st.sidebar.divider()
-    menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Import Excel", "Settings"])
+    menu = st.sidebar.radio("Go to", ["Dashboard", "🚚 Stock Intake", "Brand Manager", "Load Brand list", "Settings"])
     
     # --- 1. DASHBOARD ---
     if menu == "Dashboard":
@@ -944,8 +944,9 @@ def admin_view():
             st.info("No price changes recorded yet.")
 
     # --- 4. IMPORT EXCEL ---
+    # --- 4. IMPORT EXCEL ---
     elif menu == "Import Excel":
-        st.header("📥 Import Master Price List")
+        st.header("📥 Load Brand list")
         st.markdown("""
         **Purpose:** Upload your full brand list here to populate the system.
         * **Duplicate Protection:** Ignores spaces/case.
