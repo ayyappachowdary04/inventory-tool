@@ -876,7 +876,8 @@ def admin_view():
         brands_df = pd.read_sql("SELECT id, name FROM brands ORDER BY name", conn)
         
         if not brands_df.empty:
-            brand_map = {row['name']: row['id'] for _, row in brands_df.iterrows()}
+            # FIX 1: Enforce int() to prevent SQLite type mismatch
+            brand_map = {row['name']: int(row['id']) for _, row in brands_df.iterrows()}
             sel_brand_name = st.selectbox("Select Brand to Edit", list(brand_map.keys()))
             
             if sel_brand_name:
@@ -915,16 +916,13 @@ def admin_view():
                     st.caption("Prices are in Rupees (₹). Set to 0 if not sold.")
                     
                     if st.form_submit_button("💾 Save Updated Prices"):
-                        # Get current timestamp in IST
                         now_str = datetime.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
                         
                         for var, new_price in input_values.items():
-                            # 1. Fetch current (old) price
                             cur = conn.execute("SELECT price FROM prices WHERE brand_id=? AND variant=?", (bid, var))
                             res = cur.fetchone()
                             old_price = res[0] if (res and res[0] is not None) else 0.0
                             
-                            # 2. Compare and Log if Changed
                             if new_price != old_price:
                                 conn.execute("UPDATE prices SET price=? WHERE brand_id=? AND variant=?", (new_price, bid, var))
                                 conn.execute("INSERT INTO price_audit (timestamp, brand_id, variant, old_price, new_price) VALUES (?, ?, ?, ?, ?)",
@@ -933,11 +931,10 @@ def admin_view():
                         conn.commit()
                         st.success(f"✅ Prices updated for {sel_brand_name}!")
                         st.rerun()
-                        
         else:
             st.info("No brands found.")
 
-        # --- NEW: SHOW AUDIT HISTORY IN UI ---
+        # SHOW AUDIT HISTORY IN UI
         st.divider()
         st.subheader("📜 Price Change History")
         history_df = pd.read_sql("""
@@ -953,8 +950,7 @@ def admin_view():
         else:
             st.info("No price changes recorded yet.")
 
-    # --- 4. IMPORT EXCEL ---
-    # --- 4. IMPORT EXCEL ---
+    # --- 4. LOAD BRAND LIST ---
     elif menu == "Load Brand list":
         st.header("📥 Load Brand list")
         st.markdown("""
@@ -975,8 +971,9 @@ def admin_view():
                     else: data_dict = pd.read_excel(uploaded_file, sheet_name=None)
                     
                     existing_brands = pd.read_sql("SELECT id, name FROM brands", conn)
+                    # FIX 2: Enforce int() on strict dictionary lookup
                     brand_map_strict = {
-                        str(row['name']).lower().replace(" ", ""): row['id'] 
+                        str(row['name']).lower().replace(" ", ""): int(row['id']) 
                         for _, row in existing_brands.iterrows()
                     }
                     existing_names_list = existing_brands['name'].tolist()
@@ -1033,7 +1030,7 @@ def admin_view():
 
                             total_brands_touched += 1
 
-                            # --- STEP B: UPDATE PRICES ---
+                            # Update Prices and Audit Log from Excel Import
                             for col_name, sys_var in found_maps.items():
                                 val = row[col_name]
                                 try:
@@ -1041,12 +1038,10 @@ def admin_view():
                                     new_price = float(val)
                                     
                                     if new_price >= 0:
-                                        # 1. Fetch current (old) price
                                         cur = conn.execute("SELECT price FROM prices WHERE brand_id=? AND variant=?", (bid, sys_var))
                                         res = cur.fetchone()
                                         old_price = res[0] if (res and res[0] is not None) else 0.0
                                         
-                                        # 2. Compare and Log if Changed
                                         if new_price != old_price:
                                             now_str = datetime.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
                                             conn.execute("""
