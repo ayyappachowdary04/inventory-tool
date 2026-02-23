@@ -170,13 +170,20 @@ def get_brands():
 
 def get_inventory(date_str):
     query = """
-    SELECT b.name, i.*, p.price 
+    SELECT b.name, i.*, 
+           COALESCE(
+               (SELECT old_price FROM price_audit 
+                WHERE brand_id = i.brand_id AND variant = i.variant AND timestamp > ? || ' 23:59:59'
+                ORDER BY timestamp ASC LIMIT 1),
+               p.price
+           ) as price 
     FROM inventory i 
     JOIN brands b ON i.brand_id = b.id 
     LEFT JOIN prices p ON (i.brand_id = p.brand_id AND i.variant = p.variant)
-    WHERE date = ?
+    WHERE i.date = ?
     """
-    return pd.read_sql(query, conn, params=(date_str,))
+    # Notice we pass date_str twice now (once for the subquery, once for the main WHERE clause)
+    return pd.read_sql(query, conn, params=(date_str, date_str))
 
 def initialize_day(date_str):
     """Creates draft entries for a new day based on yesterday's closing."""
@@ -548,13 +555,19 @@ def admin_view():
 
             def get_formatted_daily_df(target_date_str):
                 query = """
-                    SELECT b.name, i.variant, i.opening, i.receipts, i.closing, p.price
+                    SELECT b.name, i.variant, i.opening, i.receipts, i.closing, 
+                           COALESCE(
+                               (SELECT old_price FROM price_audit 
+                                WHERE brand_id = i.brand_id AND variant = i.variant AND timestamp > ? || ' 23:59:59'
+                                ORDER BY timestamp ASC LIMIT 1),
+                               p.price
+                           ) as price
                     FROM inventory i
                     JOIN brands b ON i.brand_id = b.id
                     LEFT JOIN prices p ON i.brand_id = p.brand_id AND i.variant = p.variant
                     WHERE i.date = ?
                 """
-                df = pd.read_sql(query, conn, params=(target_date_str,))
+                df = pd.read_sql(query, conn, params=(target_date_str, target_date_str))
                 
                 if df.empty: return None
                 
