@@ -654,12 +654,12 @@ def admin_view():
             st.info("No data available for today yet.")
             
     # --- 2. STOCK INTAKE (RECEIPTS) ---
+    # --- 2. STOCK INTAKE (RECEIPTS) ---
     elif menu == "🚚 Stock Intake":
         st.header("🚚 Add New Stock (Receipts)")
         
         # IST DATE USED HERE
         date_in = st.date_input("Date of Receipt", get_india_date())
-        
         date_str = date_in.strftime("%Y-%m-%d")
         
         if st.button("Load / Refresh Inventory for Date"):
@@ -668,7 +668,10 @@ def admin_view():
             st.success(f"Inventory initialized for {date_str}")
             st.rerun()
 
+        # FIX 1: Enforce standard Python int() to prevent SQLite Binary Blob bugs
         def safe_save_receipt(date_val, bid, var, qty):
+            bid = int(bid)
+            qty = int(qty)
             cur = conn.execute("""
                 UPDATE inventory 
                 SET receipts = receipts + ? 
@@ -694,7 +697,9 @@ def admin_view():
                 brand_sel = st.selectbox("Select Brand Received", brands_df['name'])
                 
                 if brand_sel:
-                    bid = brands_df[brands_df['name'] == brand_sel].iloc[0]['id']
+                    # FIX 2: Enforce int() on the selected Brand ID
+                    bid = int(brands_df[brands_df['name'] == brand_sel].iloc[0]['id'])
+                    
                     cur_rows = pd.read_sql("SELECT variant, receipts FROM inventory WHERE date=? AND brand_id=?", 
                                             conn, params=(date_str, bid))
                     
@@ -705,10 +710,10 @@ def admin_view():
                         
                         for i, v_name in enumerate(VARIANTS):
                             row = cur_rows[cur_rows['variant'] == v_name]
-                            current_qty = 0 if row.empty else row.iloc[0]['receipts']
+                            current_qty = int(row.iloc[0]['receipts']) if not row.empty else 0
                             with cols[i]:
                                 new_qty = st.number_input(f"{v_name}", min_value=0, value=current_qty, key=f"rec_{bid}_{v_name}")
-                                input_vals[v_name] = new_qty
+                                input_vals[v_name] = int(new_qty) # Enforce int()
                         
                         if st.form_submit_button("💾 Save Receipts"):
                             for v, qty in input_vals.items():
@@ -747,7 +752,8 @@ def admin_view():
                                 st.error("❌ No size columns found.")
                             else:
                                 db_brands = pd.read_sql("SELECT id, name FROM brands", conn)
-                                brand_map = {name.lower().strip(): bid for bid, name in zip(db_brands['id'], db_brands['name'])}
+                                # FIX 3: Enforce int() on dictionary lookup creation
+                                brand_map = {name.lower().strip(): int(bid) for bid, name in zip(db_brands['id'], db_brands['name'])}
                                 
                                 brand_col = df_imp.columns[0]
                                 for c in df_imp.columns:
@@ -810,17 +816,21 @@ def admin_view():
                         st.success(f"Saved {update_count} items!")
                         st.rerun()
 
+            # --- SUMMARY ---
             st.divider()
             st.markdown("### 📊 Today's Total Receipts")
+            
+            # FIX 4: Use CAST to safely read any previously bugged blob data 
             daily_rec = pd.read_sql("""
-                SELECT b.name, i.variant, i.receipts 
-                FROM inventory i JOIN brands b ON i.brand_id = b.id
-                WHERE i.date=? AND i.receipts > 0
+                SELECT b.name as "Brand Name", i.variant as "Size", CAST(i.receipts AS INTEGER) as "Total Added"
+                FROM inventory i 
+                JOIN brands b ON CAST(i.brand_id AS INTEGER) = b.id
+                WHERE i.date=? AND CAST(i.receipts AS INTEGER) > 0
                 ORDER BY b.name
             """, conn, params=(date_str,))
             
             if not daily_rec.empty:
-                st.dataframe(daily_rec, use_container_width=True)
+                st.dataframe(daily_rec, use_container_width=True, hide_index=True)
             else:
                 st.caption("No stock receipts recorded yet for this date.")
 
