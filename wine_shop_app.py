@@ -1022,17 +1022,30 @@ def admin_view():
 
                             total_brands_touched += 1
 
+                            # --- STEP B: UPDATE PRICES ---
                             for col_name, sys_var in found_maps.items():
                                 val = row[col_name]
                                 try:
                                     if pd.isna(val) or str(val).strip() == '': continue
-                                    price_val = float(val)
-                                    if price_val >= 0:
-                                        conn.execute("""
-                                            UPDATE prices SET price = ? 
-                                            WHERE brand_id = ? AND variant = ?
-                                        """, (price_val, bid, sys_var))
-                                        total_prices_updated += 1
+                                    new_price = float(val)
+                                    
+                                    if new_price >= 0:
+                                        # 1. Fetch current (old) price
+                                        cur = conn.execute("SELECT price FROM prices WHERE brand_id=? AND variant=?", (bid, sys_var))
+                                        res = cur.fetchone()
+                                        old_price = res[0] if (res and res[0] is not None) else 0.0
+                                        
+                                        # 2. Compare and Log if Changed
+                                        if new_price != old_price:
+                                            now_str = datetime.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+                                            conn.execute("""
+                                                UPDATE prices SET price = ? 
+                                                WHERE brand_id = ? AND variant = ?
+                                            """, (new_price, bid, sys_var))
+                                            
+                                            conn.execute("INSERT INTO price_audit (timestamp, brand_id, variant, old_price, new_price) VALUES (?, ?, ?, ?, ?)",
+                                                         (now_str, bid, sys_var, old_price, new_price))
+                                            total_prices_updated += 1
                                 except: continue
                                     
                     conn.commit()
