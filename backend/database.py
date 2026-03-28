@@ -1,4 +1,5 @@
 import psycopg2
+import psycopg2.errors
 from psycopg2.extras import RealDictCursor
 import datetime
 import os
@@ -23,6 +24,8 @@ class PostgresWrapper:
         cur = self.conn.cursor()
         cur.execute(sql, params)
         return cur
+    def cursor(self):
+        return self.conn.cursor()
     def commit(self):
         self.conn.commit()
     def rollback(self):
@@ -42,7 +45,8 @@ def init_db():
         return
         
     conn = get_db()
-    c = conn.cursor()
+    # PostgresWrapper already provides an execute() method
+    c = conn
 
     try:
         c.execute("SELECT role FROM users LIMIT 1")
