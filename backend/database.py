@@ -71,8 +71,8 @@ def get_db():
         raise e
 
 def init_db():
-    if not DB_URL:
-        print("Warning: DATABASE_URL not set.")
+    if not DB_URL and not DB_HOST:
+        print("Warning: No database configuration found for initialization.")
         return
         
     conn = get_db()
