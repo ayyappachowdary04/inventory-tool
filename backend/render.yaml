@@ -4,7 +4,7 @@ services:
     env: python
     region: ohio
     plan: free
-    repo: https://github.com/akorrapati/inventory-tool.git
+    repo: https://github.com/ayyappachowdary04/inventory-tool.git
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
