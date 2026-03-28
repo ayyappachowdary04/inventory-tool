@@ -5,9 +5,8 @@ services:
     region: ohio
     plan: free
     repo: https://github.com/ayyappachowdary04/inventory-tool.git
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && gunicorn -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT
     envVars:
       - key: DATABASE_URL
         sync: false # Requires manual setup in dashboard
