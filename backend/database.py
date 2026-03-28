@@ -8,6 +8,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DB_URL = os.getenv("DATABASE_URL")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+DB_NAME = os.getenv("DB_NAME", "postgres")
 VARIANTS = ["2L", "1L", "Q", "P", "N"]
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
@@ -38,14 +43,27 @@ class PostgresWrapper:
         self.conn.close()
 
 def get_db():
-    if not DB_URL:
-        print("CRITICAL: DATABASE_URL is not set!")
-        raise ValueError("DATABASE_URL is not set!")
     try:
-        # Hide password for security
-        safe_url = DB_URL.split('@')[-1] if '@' in DB_URL else 'HIDDEN'
-        print(f"DATABASE: Attempting to connect to host: {safe_url}")
-        conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+        if DB_HOST and DB_USER and DB_PASS:
+            print(f"DATABASE: Connecting via individual variables to host: {DB_HOST}")
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASS,
+                dbname=DB_NAME,
+                sslmode='require',
+                cursor_factory=RealDictCursor
+            )
+        elif DB_URL:
+            # Hide password for security
+            safe_url = DB_URL.split('@')[-1] if '@' in DB_URL else 'HIDDEN'
+            print(f"DATABASE: Connecting via URL to host: {safe_url}")
+            conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+        else:
+            print("CRITICAL: No database configuration found (DATABASE_URL or DB_HOST/USER/PASS)!")
+            raise ValueError("No database configuration found!")
+        
         print("DATABASE: Connection successful!")
         return PostgresWrapper(conn)
     except Exception as e:
