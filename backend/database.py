@@ -21,9 +21,13 @@ class PostgresWrapper:
         if "INSERT OR IGNORE" in sql.upper():
             sql = sql.upper().replace("INSERT OR IGNORE", "INSERT") + " ON CONFLICT DO NOTHING"
         
-        cur = self.conn.cursor()
-        cur.execute(sql, params)
-        return cur
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, params)
+            return cur
+        except Exception as e:
+            print(f"DATABASE ERROR in execute: {str(e)}")
+            raise e
     def cursor(self):
         return self.conn.cursor()
     def commit(self):
@@ -35,9 +39,18 @@ class PostgresWrapper:
 
 def get_db():
     if not DB_URL:
+        print("CRITICAL: DATABASE_URL is not set!")
         raise ValueError("DATABASE_URL is not set!")
-    conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
-    return PostgresWrapper(conn)
+    try:
+        # Hide password for security
+        safe_url = DB_URL.split('@')[-1] if '@' in DB_URL else 'HIDDEN'
+        print(f"DATABASE: Attempting to connect to host: {safe_url}")
+        conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+        print("DATABASE: Connection successful!")
+        return PostgresWrapper(conn)
+    except Exception as e:
+        print(f"CRITICAL: Failed to connect to database: {str(e)}")
+        raise e
 
 def init_db():
     if not DB_URL:
