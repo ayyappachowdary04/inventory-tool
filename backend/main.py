@@ -14,6 +14,19 @@ from pdf_parser import parse_pdf_receipt
 
 app = FastAPI(title="Wine Shop Manager API")
 
+@app.get("/")
+async def root():
+    return {"status": "online", "message": "Wine Shop API is running"}
+
+@app.get("/health")
+async def health_check(conn=Depends(get_db)):
+    try:
+        # Test a simple query
+        conn.execute("SELECT 1").fetchone()
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return {"status": "unhealthy", "database": str(e)}
+
 origins = [
     "http://localhost:3000", 
     "http://127.0.0.1:3000",
