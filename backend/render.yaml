@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: wineshop-backend
+    env: python
+    region: ohio
+    plan: free
+    repo: https://github.com/akorrapati/inventory-tool.git
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false # Requires manual setup in dashboard
+      - key: FRONTEND_URL
+        sync: false # Requires manual setup in dashboard or replace with url
+      - key: PYTHON_VERSION
+        value: 3.10.0
