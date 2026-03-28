@@ -46,7 +46,12 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
-    init_db()
+    try:
+        init_db()
+        print("DATABASE: Initialization successful!")
+    except Exception as e:
+        print(f"CRITICAL: Database initialization failed during startup: {str(e)}")
+        # We don't re-raise here so the server stays UP even if the DB is misconfigured
 
 # ─────────────────────────────────────────────
 # MODELS
