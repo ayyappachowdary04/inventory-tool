@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
-import sqlite3
 import datetime
 import difflib
 import pandas as pd
@@ -119,8 +118,8 @@ def add_brand(brand: BrandCreate):
         ).fetchone()
         if existing:
             raise HTTPException(status_code=409, detail=f"Duplicate brand: '{existing['name']}'")
-        conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
-        bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        cur = conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?) RETURNING id", (clean_name, True))
+        bid = cur.fetchone()["id"]
         for v in VARIANTS:
             conn.execute("INSERT INTO prices (brand_id, variant, price) VALUES (?, ?, 0.0)", (bid, v))
         conn.commit()
@@ -587,8 +586,8 @@ async def import_brands_excel(file: UploadFile = File(...)):
                         typos_fixed += 1
                     else:
                         clean_name = " ".join(raw_brand.split()).title()
-                        conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?)", (clean_name, True))
-                        bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                        cur = conn.execute("INSERT INTO brands (name, is_alcohol) VALUES (?, ?) RETURNING id", (clean_name, True))
+                        bid = cur.fetchone()["id"]
                         brand_map_strict[clean_name.lower().replace(" ", "")] = bid
                         existing_names_list.append(clean_name)
                         for v in VARIANTS:
@@ -706,17 +705,9 @@ def change_pin(req: PinChange):
 
 @app.get("/api/settings/backup")
 def backup_db():
-    try:
-        with open("wineshop.db", "rb") as f:
-            data = f.read()
-        today = get_india_date()
-        return StreamingResponse(
-            io.BytesIO(data),
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename=wineshop_backup_{today}.db"}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Backup is not supported for remote PostgreSQL this way.
+    # You should use Supabase dashboard or pg_dump.
+    raise HTTPException(status_code=501, detail="Backup not implemented for remote database. Use Supabase dashboard.")
 
 @app.delete("/api/settings/reset-inventory")
 def reset_inventory():
