@@ -165,11 +165,29 @@ export default function BrandsPage() {
             </div>
             
             <div className="glass-card animate-fade-in">
-              <h2>📥 Load Full Brand / Price List</h2>
+              <h2>📥 Load Full Brand / Price List (Master Import)</h2>
               <p className="text-muted" style={{ marginBottom: '1.5rem', fontSize: '0.9rem' }}>
-                Upload an Excel/CSV file with brand names in Column A and sizes in header. Typo detection is active.
+                Quickly add hundreds of brands or update all prices at once using an Excel or CSV file.
               </p>
-              <input type="file" ref={fileInputRef} onChange={handleListUpload} accept=".xlsx,.xls,.csv" />
+              
+              <div className="file-upload-zone">
+                <div className="upload-icon">📊</div>
+                <div className="upload-text">Click or Drag Excel File Here</div>
+                <div className="upload-hint">Supports .xlsx, .xls, .csv</div>
+                <input 
+                  type="file" 
+                  className="file-upload-input"
+                  ref={fileInputRef} 
+                  onChange={handleListUpload} 
+                  accept=".xlsx,.xls,.csv" 
+                />
+              </div>
+
+              <div style={{ padding: '1rem', background: 'rgba(212, 175, 55, 0.1)', borderRadius: '8px', border: '1px solid var(--accent-gold)' }}>
+                <p style={{ fontSize: '0.85rem', color: 'var(--accent-gold)' }}>
+                  <strong>💡 Pro Tip:</strong> Your Excel should have brand names in any column labeled "Brand" or "Name", and prices in columns like "750", "375", "180", or "Full/Half".
+                </p>
+              </div>
             </div>
           </div>
 

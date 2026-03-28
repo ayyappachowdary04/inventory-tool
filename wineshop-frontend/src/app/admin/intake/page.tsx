@@ -171,16 +171,28 @@ export default function StockIntakePage() {
           <div className="glass-card animate-fade-in" style={{ maxWidth: '800px', margin: '0 auto', textAlign: 'center' }}>
             <h2 style={{ marginBottom: '1.5rem' }}>Upload {activeTab === 'excel' ? 'Excel/CSV Report' : 'Supplier PDF Invoice'}</h2>
             
-            <div style={{ padding: '3rem', border: '2px dashed var(--border)', borderRadius: '12px', background: 'var(--bg-secondary)', marginBottom: '2rem' }}>
+            <div className="file-upload-zone">
+              <div className="upload-icon">{activeTab === 'excel' ? '📗' : '📑'}</div>
+              <div className="upload-text">Click or Drag {activeTab === 'excel' ? 'Excel File' : 'PDF Invoice'} Here</div>
+              <div className="upload-hint">Selected date: {date}</div>
               <input 
                 type="file" 
+                className="file-upload-input"
                 accept={activeTab === 'excel' ? ".xlsx,.xls,.csv" : ".pdf"}
                 onChange={activeTab === 'excel' ? handleExcelUpload : handlePdfUpload}
                 ref={fileInputRef}
-                style={{ fontSize: '1.1rem' }}
               />
             </div>
-            {activeTab === 'excel' && <p className="text-muted">We will match Excel headers like "750ml" or "Q" and Brand Names to update incoming intake for {date}.</p>}
+
+            {activeTab === 'excel' ? (
+              <p className="text-muted" style={{ fontSize: '0.9rem' }}>
+                Quick Upload: We automatically scan for sizes (750, 375, etc.) and match brand names to update stock received on <strong>{date}</strong>.
+              </p>
+            ) : (
+              <p className="text-muted" style={{ fontSize: '0.9rem' }}>
+                Intelligent Scan: We will try to extract brand names and quantities directly from the PDF text.
+              </p>
+            )}
 
             {pdfData && (
               <div style={{ marginTop: '2rem', textAlign: 'left' }}>

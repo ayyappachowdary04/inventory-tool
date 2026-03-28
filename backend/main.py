@@ -550,7 +550,13 @@ async def import_brands_excel(file: UploadFile = File(...)):
         content = await file.read()
         buf = io.BytesIO(content)
         ext = file.filename.split(".")[-1].lower()
-        data_dict = {"Default": pd.read_csv(buf)} if ext == "csv" else pd.read_excel(buf, sheet_name=None)
+        
+        # Read the file based on extension
+        if ext == "csv":
+            df_imp = pd.read_csv(buf)
+            data_dict = {"Default": df_imp}
+        else:
+            data_dict = pd.read_excel(buf, sheet_name=None)
 
         existing_brands = conn.execute("SELECT id, name FROM brands").fetchall()
         brand_map_strict = {
@@ -563,32 +569,50 @@ async def import_brands_excel(file: UploadFile = File(...)):
         total_prices = 0
         typos_fixed = 0
 
+        # All possible variants we support
+        # We also look for numeric only (750) or descriptive (Full)
+        variant_hints = {
+            "750": "Q", "full": "Q", "q": "Q", "qt": "Q", "750ml": "Q",
+            "375": "P", "half": "P", "p": "P", "ht": "P", "375ml": "P",
+            "180": "N", "quart": "N", "n": "N", "nipt": "N", "180ml": "N",
+            "1000": "1L", "1l": "1L", "1 ltr": "1L",
+            "2000": "2L", "2l": "2L", "2 ltr": "2L"
+        }
+
         for sheet_name, df_imp in data_dict.items():
             if df_imp.empty:
                 continue
+            
+            # Clean column names
             df_imp.columns = df_imp.columns.astype(str).str.strip().str.lower()
-            variant_map = {
-                "2l": "2L", "1l": "1L", "q": "Q", "750ml": "Q",
-                "p": "P", "375ml": "P", "n": "N", "180ml": "N"
-            }
+            
+            # Identify variant columns
             found_maps = {}
             for col in df_imp.columns:
-                for key, sys_var in variant_map.items():
-                    if key in col:
+                # Find if any hint is in the column name
+                for hint, sys_var in variant_hints.items():
+                    # We look for exact word matches or key substrings
+                    if hint == col or (hint in col and (len(col) <= len(hint) + 3)):
                         found_maps[col] = sys_var
                         break
+            
             if not found_maps:
                 continue
 
-            brand_col = df_imp.columns[0]
+            # Identify the Brand column
+            brand_col = None
+            brand_keywords = ["brand", "name", "liquor", "item", "particulars", "description"]
             for c in df_imp.columns:
-                if "brand" in c or "name" in c:
+                if any(kw in c for kw in brand_keywords):
                     brand_col = c
                     break
+            
+            if not brand_col:
+                brand_col = df_imp.columns[0] # Default to first
 
             for _, row in df_imp.iterrows():
                 raw_brand = str(row[brand_col]).strip()
-                if not raw_brand or raw_brand.lower() == "nan":
+                if not raw_brand or raw_brand.lower() == "nan" or raw_brand.lower() == "total":
                     continue
 
                 bid = None
@@ -618,6 +642,11 @@ async def import_brands_excel(file: UploadFile = File(...)):
                     try:
                         if pd.isna(val) or str(val).strip() == "":
                             continue
+                        
+                        # Handle cases like "₹ 500" or messy strings
+                        if isinstance(val, str):
+                            val = val.replace("₹", "").replace(",", "").strip()
+                        
                         new_price = float(val)
                         if new_price >= 0:
                             res = conn.execute("SELECT price FROM prices WHERE brand_id=? AND variant=?", (bid, sys_var)).fetchone()
@@ -629,7 +658,8 @@ async def import_brands_excel(file: UploadFile = File(...)):
                                     (now_str, bid, sys_var, old_price, new_price)
                                 )
                                 total_prices += 1
-                    except:
+                    except Exception as e:
+                        print(f"Error parsing price for {raw_brand} {sys_var}: {e}")
                         continue
 
         conn.commit()
