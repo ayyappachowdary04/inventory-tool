@@ -711,17 +711,25 @@ async def import_closing_excel(date: str, file: UploadFile = File(...)):
                 file_brand = str(row[brand_col]).strip()
                 bid = brand_map.get(file_brand.lower())
                 if bid:
+                    row_updated = False
                     for col_name, sys_var in found_maps.items():
                         try:
                             val = row[col_name]
                             closing_qty = int(float(val))
                         except:
                             closing_qty = 0
-                        conn.execute(
+                        cur = conn.execute(
                             "UPDATE inventory SET closing=? WHERE date=? AND brand_id=? AND variant=?",
                             (closing_qty, date, bid, sys_var)
                         )
-                    match_count += 1
+                        if cur.rowcount == 0:
+                            conn.execute(
+                                "INSERT INTO inventory (date, brand_id, variant, opening, receipts, closing, status) VALUES (?, ?, ?, 0, 0, ?, 0)",
+                                (date, bid, sys_var, closing_qty)
+                            )
+                        row_updated = True
+                    if row_updated:
+                        match_count += 1
         if match_count > 0:
             conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date,))
         conn.commit()
