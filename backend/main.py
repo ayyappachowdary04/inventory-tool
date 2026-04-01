@@ -722,6 +722,8 @@ async def import_closing_excel(date: str, file: UploadFile = File(...)):
                             (closing_qty, date, bid, sys_var)
                         )
                     match_count += 1
+        if match_count > 0:
+            conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date,))
         conn.commit()
         return {"imported": match_count}
     finally:
