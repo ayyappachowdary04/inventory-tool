@@ -96,53 +96,59 @@ export default function ApprovalsPage() {
               </div>
             </div>
 
-            {selectedDate && reportData.data.length > 0 && (
+            {selectedDate && (
               <div className="glass-card animate-fade-in">
                 <div className="flex-between" style={{ marginBottom: '2rem' }}>
                   <h2>Reviewing Report: {selectedDate}</h2>
                   <div className="metric-value">₹ {reportData.total_revenue.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
                 </div>
 
-                <div className="data-table-container" style={{ marginBottom: '2rem' }}>
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Brand</th>
-                        <th>Variant</th>
-                        <th>Opening</th>
-                        <th>Closing</th>
-                        <th>Sold</th>
-                        <th>Revenue (₹)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reportData.data.map((brand: any, idx: number) => {
-                        return ['2L', '1L', 'Q', 'P', 'N'].map(v => {
-                          const available = brand[`${v}_available`];
-                          const closing = brand[`${v}_closing`];
-                          const sold = brand[`${v}_sold`];
-                          if (available === 0 && closing === 0 && sold === 0) return null;
-                          return (
-                            <tr key={`${idx}-${v}`}>
-                              <td>{brand.brand}</td>
-                              <td>{v}</td>
-                              <td>{available}</td>
-                              <td>{closing}</td>
-                              <td>{sold}</td>
-                              <td>--</td>
-                            </tr>
-                          );
-                        });
-                      })}
-                      <tr>
-                        <td colSpan={5} style={{ textAlign: 'right', fontWeight: 'bold' }}>Total Revenue</td>
-                        <td style={{ fontWeight: 'bold', color: 'var(--accent-gold)' }}>
-                          {reportData.total_revenue.toFixed(2)}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                {reportData.data.length > 0 ? (
+                  <div className="data-table-container" style={{ marginBottom: '2rem' }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Brand</th>
+                          <th>Variant</th>
+                          <th>Opening</th>
+                          <th>Closing</th>
+                          <th>Sold</th>
+                          <th>Revenue (₹)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reportData.data.map((brand: any, idx: number) => {
+                          return ['2L', '1L', 'Q', 'P', 'N'].map(v => {
+                            const available = brand[`${v}_available`];
+                            const closing = brand[`${v}_closing`];
+                            const sold = brand[`${v}_sold`];
+                            if (available === 0 && closing === 0 && sold === 0) return null;
+                            return (
+                              <tr key={`${idx}-${v}`}>
+                                <td>{brand.brand}</td>
+                                <td>{v}</td>
+                                <td>{available}</td>
+                                <td>{closing}</td>
+                                <td>{sold}</td>
+                                <td>--</td>
+                              </tr>
+                            );
+                          });
+                        })}
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'right', fontWeight: 'bold' }}>Total Revenue</td>
+                          <td style={{ fontWeight: 'bold', color: 'var(--accent-gold)' }}>
+                            {reportData.total_revenue.toFixed(2)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="data-table-container" style={{ marginBottom: '2rem' }}>
+                    <p className="text-muted">No sales rows found for this report yet. You can still approve or reject the pending report.</p>
+                  </div>
+                )}
 
                 <div className="grid-2" style={{ gap: '1rem' }}>
                   <button className="btn btn-outline" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }} onClick={() => handleAction('reject')}>
