@@ -13,6 +13,10 @@ export default function ApprovalsPage() {
 
   useEffect(() => {
     loadPendingDates();
+    
+    // Auto-refresh pending approvals every 30 seconds
+    const interval = setInterval(loadPendingDates, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const loadPendingDates = async () => {
@@ -21,9 +25,12 @@ export default function ApprovalsPage() {
       setPendingDates(dates);
       if (dates.length > 0 && !selectedDate) {
         setSelectedDate(dates[0]);
+      } else if (dates.length === 0) {
+        setSelectedDate('');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      alert(`Error loading pending approvals: ${e.message}`);
     }
   };
 
@@ -71,6 +78,7 @@ export default function ApprovalsPage() {
       <Sidebar />
       <main className="main-content">
         <h1 style={{ marginBottom: '2rem' }}>Daily Report Approvals</h1>
+        <button onClick={loadPendingDates} className="btn btn-outline" style={{ marginBottom: '1rem' }}>🔄 Refresh Pending Approvals</button>
 
         {pendingDates.length === 0 ? (
           <div className="glass-card animate-fade-in" style={{ backgroundColor: 'rgba(46, 139, 87, 0.1)', borderColor: 'var(--success)' }}>

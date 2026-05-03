@@ -235,7 +235,9 @@ def update_receipts(update: ReceiptUpdate):
 def submit_report(date_str: str):
     conn = get_db()
     try:
-        conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date_str,))
+        print(f"Submitting report for date: {date_str}")
+        cur = conn.execute("UPDATE inventory SET status=1 WHERE date=?", (date_str,))
+        print(f"Updated {cur.rowcount} rows to status=1")
         conn.commit()
         return {"message": "Report submitted"}
     finally:
@@ -446,7 +448,9 @@ def get_pending_approvals():
         rows = conn.execute(
             "SELECT DISTINCT date FROM inventory WHERE status=1 ORDER BY date DESC"
         ).fetchall()
-        return [r["date"] for r in rows]
+        dates = [r["date"] for r in rows]
+        print(f"Pending approval dates: {dates}")
+        return dates
     finally:
         conn.close()
 
